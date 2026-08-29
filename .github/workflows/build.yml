@@ -7,38 +7,45 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04   # ← Ubuntu 20.04 use karein
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout source code
       uses: actions/checkout@v4
     
-    - name: Install GCC 4.7 and dependencies
+    - name: Install dependencies
       run: |
         sudo apt-get update
-        
-        # GCC 4.7 ARM cross-compiler install karein
         sudo apt-get install -y \
-          gcc-4.7-arm-linux-gnueabi \
-          g++-4.7-arm-linux-gnueabi \
-          binutils-arm-linux-gnueabi \
           build-essential \
           libncurses-dev \
           bison \
           flex \
           libssl-dev \
-          bc
+          bc \
+          binutils-arm-linux-gnueabi \
+          wget \
+          xz-utils
         
-        # GCC 4.7 ko default banayein
-        sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7 100
-        sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7
+    - name: Download and install GCC 4.7 ARM toolchain (binary)
+      run: |
+        # Linaro GCC 4.7 toolchain download karein
+        cd /tmp
+        wget https://releases.linaro.org/archive/13.06/components/toolchain/binaries/gcc-linaro-arm-linux-gnueabi-4.7.4-2013.06-1.tar.xz
+        tar -xf gcc-linaro-arm-linux-gnueabi-4.7.4-2013.06-1.tar.xz
+        sudo mv gcc-linaro-arm-linux-gnueabi-4.7.4-2013.06-1 /opt/gcc-4.7
         
-        echo "=== GCC Version ==="
-        arm-linux-gnueabi-gcc --version
+        # PATH mein add karein
+        echo "/opt/gcc-4.7/bin" >> $GITHUB_PATH
+        echo "CROSS_COMPILE=arm-linux-gnueabi-" >> $GITHUB_ENV
+        
+        # Check version
+        /opt/gcc-4.7/bin/arm-linux-gnueabi-gcc --version
     
     - name: Setup kernel build
       run: |
         cd kernel/e5885-kernel-3.10
+        export PATH=/opt/gcc-4.7/bin:$PATH
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- mrproper
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- defconfig
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules_prepare
@@ -54,6 +61,7 @@ jobs:
     - name: Build AmneziaWG module
       run: |
         cd kernel/e5885-kernel-3.10
+        export PATH=/opt/gcc-4.7/bin:$PATH
         make -C . \
           M=drivers/net/amneziawg \
           ARCH=arm \
@@ -66,6 +74,7 @@ jobs:
     - name: Strip and verify module
       run: |
         cd kernel/e5885-kernel-3.10
+        export PATH=/opt/gcc-4.7/bin:$PATH
         if [ -f drivers/net/amneziawg/amneziawg.ko ]; then
           cp drivers/net/amneziawg/amneziawg.ko ./
           arm-linux-gnueabi-strip --strip-unneeded amneziawg.ko
