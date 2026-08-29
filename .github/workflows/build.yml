@@ -1,4 +1,4 @@
-name: Build AmneziaWG for E5885 (GCC 4.7)
+name: Build AmneziaWG for E5885 (GCC 4.7.4)
 
 on:
   push:
@@ -7,15 +7,20 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04   # ← Ubuntu 20.04 (GCC 4.7 available)
+    runs-on: ubuntu-20.04
     
     steps:
     - name: Checkout source code
       uses: actions/checkout@v4
     
-    - name: Install GCC 4.7 and ARM toolchain
+    - name: Install GCC 4.7.4 from Ubuntu 14.04 (Trusty)
       run: |
+        # Trusty repositories add karein
+        echo "deb http://archive.ubuntu.com/ubuntu trusty main universe" | sudo tee -a /etc/apt/sources.list
+        
         sudo apt-get update
+        
+        # GCC 4.7.4 ARM cross-compiler install karein
         sudo apt-get install -y \
           gcc-4.7-arm-linux-gnueabi \
           g++-4.7-arm-linux-gnueabi \
@@ -41,7 +46,6 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- defconfig
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules_prepare
         
-        # Vermagic check karein
         echo "=== Kernel Vermagic ==="
         cat include/config/kernel.release || echo "Not found"
         
@@ -51,7 +55,6 @@ jobs:
         git clone --branch v2.0 https://github.com/amnezia-vpn/amneziawg-go.git ../amneziawg
         ln -s ../amneziawg ./drivers/net/amneziawg
         cd drivers/net/amneziawg
-        # Zinc ARM support disable karein
         sed -i 's/CONFIG_ZINC_ARCH_ARM=y/CONFIG_ZINC_ARCH_ARM=n/g' Makefile 2>/dev/null || true
         
     - name: Build AmneziaWG module
@@ -88,5 +91,5 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: amneziawg-e5885-gcc47
+        name: amneziawg-e5885-gcc474
         path: kernel/e5885-kernel-3.10/amneziawg.ko
