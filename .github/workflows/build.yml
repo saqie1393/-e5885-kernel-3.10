@@ -1,4 +1,4 @@
-name: Build AmneziaWG for E5885 (GCC 4.8)
+name: Build AmneziaWG for E5885 (GCC 4.7)
 
 on:
   push:
@@ -7,18 +7,18 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04   # ← Ubuntu 20.04 (GCC 4.7 available)
     
     steps:
     - name: Checkout source code
       uses: actions/checkout@v4
     
-    - name: Install GCC 4.8 and ARM toolchain
+    - name: Install GCC 4.7 and ARM toolchain
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          gcc-4.8-arm-linux-gnueabi \
-          g++-4.8-arm-linux-gnueabi \
+          gcc-4.7-arm-linux-gnueabi \
+          g++-4.7-arm-linux-gnueabi \
           binutils-arm-linux-gnueabi \
           build-essential \
           libncurses-dev \
@@ -27,9 +27,11 @@ jobs:
           libssl-dev \
           bc
         
-        # GCC 4.8 ko default banayein
-        sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.8 100
-        sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.8
+        # GCC 4.7 ko default banayein
+        sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7 100
+        sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7
+        
+        echo "=== GCC Version ==="
         arm-linux-gnueabi-gcc --version
     
     - name: Setup kernel build
@@ -39,12 +41,17 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- defconfig
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules_prepare
         
+        # Vermagic check karein
+        echo "=== Kernel Vermagic ==="
+        cat include/config/kernel.release || echo "Not found"
+        
     - name: Download AmneziaWG source
       run: |
         cd kernel/e5885-kernel-3.10
         git clone --branch v2.0 https://github.com/amnezia-vpn/amneziawg-go.git ../amneziawg
         ln -s ../amneziawg ./drivers/net/amneziawg
         cd drivers/net/amneziawg
+        # Zinc ARM support disable karein
         sed -i 's/CONFIG_ZINC_ARCH_ARM=y/CONFIG_ZINC_ARCH_ARM=n/g' Makefile 2>/dev/null || true
         
     - name: Build AmneziaWG module
@@ -59,13 +66,19 @@ jobs:
           V=1 \
           modules
     
-    - name: Strip module
+    - name: Strip and verify module
       run: |
         cd kernel/e5885-kernel-3.10
         if [ -f drivers/net/amneziawg/amneziawg.ko ]; then
           cp drivers/net/amneziawg/amneziawg.ko ./
           arm-linux-gnueabi-strip --strip-unneeded amneziawg.ko
-          ls -la amneziawg.ko
+          
+          echo "=== Module Information ==="
+          file amneziawg.ko
+          modinfo amneziawg.ko || true
+          
+          echo "=== Vermagic ==="
+          modinfo amneziawg.ko | grep vermagic || echo "Vermagic not found"
         else
           echo "Module not found! Checking build directory..."
           find drivers -name "*.ko" -type f
@@ -75,5 +88,5 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: amneziawg-e5885-gcc48
+        name: amneziawg-e5885-gcc47
         path: kernel/e5885-kernel-3.10/amneziawg.ko
