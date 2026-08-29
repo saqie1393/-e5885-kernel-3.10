@@ -1,4 +1,4 @@
-name: Build AmneziaWG for E5885 (GCC 4.7)
+name: Build AmneziaWG for E5885 (GCC 4.8)
 
 on:
   push:
@@ -13,12 +13,12 @@ jobs:
     - name: Checkout source code
       uses: actions/checkout@v4
     
-    - name: Install GCC 4.7 and ARM toolchain
+    - name: Install GCC 4.8 and ARM toolchain
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          gcc-4.7-arm-linux-gnueabi \
-          g++-4.7-arm-linux-gnueabi \
+          gcc-4.8-arm-linux-gnueabi \
+          g++-4.8-arm-linux-gnueabi \
           binutils-arm-linux-gnueabi \
           build-essential \
           libncurses-dev \
@@ -27,8 +27,9 @@ jobs:
           libssl-dev \
           bc
         
-        sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7 100
-        sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7
+        # GCC 4.8 ko default banayein
+        sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.8 100
+        sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.8
         arm-linux-gnueabi-gcc --version
     
     - name: Setup kernel build
@@ -74,5 +75,5 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: amneziawg-e5885-gcc47
+        name: amneziawg-e5885-gcc48
         path: kernel/e5885-kernel-3.10/amneziawg.ko
