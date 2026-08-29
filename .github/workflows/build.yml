@@ -7,24 +7,33 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04   # ← Ubuntu-22.04 use karein
     
     steps:
     - name: Checkout source code
       uses: actions/checkout@v4
     
-    - name: Install GCC 4.7.4 from Ubuntu 14.04 (Trusty)
+    - name: Download and install GCC 4.7.4 from Launchpad
       run: |
-        # Trusty repositories add karein
-        echo "deb http://archive.ubuntu.com/ubuntu trusty main universe" | sudo tee -a /etc/apt/sources.list
+        mkdir -p ~/gcc-packages
+        cd ~/gcc-packages
         
-        sudo apt-get update
+        # Packages download karein
+        wget http://launchpad.net/ubuntu/+archive/primary/+files/gcc-4.7-arm-linux-gnueabi_4.7.4-3ubuntu12cross3_amd64.deb
+        wget http://launchpad.net/ubuntu/+archive/primary/+files/g++-4.7-arm-linux-gnueabi_4.7.4-3ubuntu12cross3_amd64.deb
+        wget http://launchpad.net/ubuntu/+archive/primary/+files/libgcc-4.7-dev-armhf-cross_4.7.4-3ubuntu12cross3_all.deb
+        wget http://launchpad.net/ubuntu/+archive/primary/+files/libstdc++-4.7-dev-armhf-cross_4.7.4-3ubuntu12cross3_all.deb
+        wget http://launchpad.net/ubuntu/+archive/primary/+files/libc6-dev-armhf-cross_2.23-0ubuntu3cross1_all.deb
+        wget http://launchpad.net/ubuntu/+archive/primary/+files/binutils-arm-linux-gnueabi_2.24-5ubuntu3cross1.1_amd64.deb
         
-        # GCC 4.7.4 ARM cross-compiler install karein
+        # Install packages (ignore dependency errors)
+        sudo dpkg -i *.deb || true
+        
+        # Fix broken dependencies
+        sudo apt-get install -f -y
+        
+        # Install other dependencies
         sudo apt-get install -y \
-          gcc-4.7-arm-linux-gnueabi \
-          g++-4.7-arm-linux-gnueabi \
-          binutils-arm-linux-gnueabi \
           build-essential \
           libncurses-dev \
           bison \
@@ -45,9 +54,6 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- mrproper
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- defconfig
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules_prepare
-        
-        echo "=== Kernel Vermagic ==="
-        cat include/config/kernel.release || echo "Not found"
         
     - name: Download AmneziaWG source
       run: |
