@@ -15,22 +15,17 @@ jobs:
     
     - name: Extract and setup Linaro GCC 4.7
       run: |
-        # Check ke file exist karti hai
         echo "=== Checking gcc folder ==="
         ls -la gcc/
         
-        # Linaro tarball extract karein
         tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
         sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
         
-        # PATH mein add karein
         echo "/opt/gcc-4.7/bin" >> $GITHUB_PATH
         echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> $GITHUB_ENV
         
-        # Check version
         /opt/gcc-4.7/bin/arm-linux-gnueabihf-gcc --version
         
-        # Install other dependencies
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
@@ -40,9 +35,33 @@ jobs:
           libssl-dev \
           bc
     
+    - name: Debug - Check kernel folder structure
+      run: |
+        echo "=== Current directory ==="
+        pwd
+        echo "=== List all files in root ==="
+        ls -la
+        echo "=== Check kernel folder ==="
+        ls -la kernel/ || echo "kernel folder not found"
+        echo "=== Check if Makefile exists ==="
+        find . -name "Makefile" -type f | head -10
+    
     - name: Setup kernel build
       run: |
-        cd kernel   # ← YAHAN CHANGE
+        # Pehle check karein ke kaunsa folder sahi hai
+        if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
+          echo "=== Using kernel/ folder ==="
+          cd kernel
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
+          echo "=== Using kernel/e5885-kernel-3.10/ folder ==="
+          cd kernel/e5885-kernel-3.10
+        else
+          echo "=== Makefile with mrproper not found! ==="
+          echo "Searching for mrproper in all Makefiles..."
+          grep -r "mrproper" . --include="Makefile" 2>/dev/null || echo "mrproper not found"
+          exit 1
+        fi
+        
         export PATH=/opt/gcc-4.7/bin:$PATH
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- mrproper
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
@@ -50,7 +69,15 @@ jobs:
         
     - name: Download AmneziaWG source
       run: |
-        cd kernel   # ← YAHAN CHANGE
+        # Same folder detection
+        if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
+          cd kernel
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
+          cd kernel/e5885-kernel-3.10
+        else
+          exit 1
+        fi
+        
         git clone --branch v2.0 https://github.com/amnezia-vpn/amneziawg-go.git ../amneziawg
         ln -s ../amneziawg ./drivers/net/amneziawg
         cd drivers/net/amneziawg
@@ -58,7 +85,14 @@ jobs:
         
     - name: Build AmneziaWG module
       run: |
-        cd kernel   # ← YAHAN CHANGE
+        if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
+          cd kernel
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
+          cd kernel/e5885-kernel-3.10
+        else
+          exit 1
+        fi
+        
         export PATH=/opt/gcc-4.7/bin:$PATH
         make -C . \
           M=drivers/net/amneziawg \
@@ -71,7 +105,14 @@ jobs:
     
     - name: Strip and verify module
       run: |
-        cd kernel   # ← YAHAN CHANGE
+        if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
+          cd kernel
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
+          cd kernel/e5885-kernel-3.10
+        else
+          exit 1
+        fi
+        
         export PATH=/opt/gcc-4.7/bin:$PATH
         if [ -f drivers/net/amneziawg/amneziawg.ko ]; then
           cp drivers/net/amneziawg/amneziawg.ko ./
@@ -93,4 +134,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: amneziawg-e5885-linaro-gcc47
-        path: kernel/amneziawg.ko   # ← YAHAN BHI CHANGE
+        path: kernel/amneziawg.ko
