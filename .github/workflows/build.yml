@@ -15,8 +15,12 @@ jobs:
     
     - name: Install GCC 4.7 from local .deb file
       run: |
-        # Local .deb file install karein
-        sudo dpkg -i tools/gcc-4.7-arm-linux-gnueabi_4.7.4-3ubuntu12cross3_amd64.deb || true
+        # Check ke file exist karti hai
+        echo "=== Checking tools folder ==="
+        ls -la tools/
+        
+        # .deb file install karein (exact filename match karein)
+        sudo dpkg -i tools/gcc-4.7-arm-linux-gnuabi_4.7.4-3ubuntu12cross3_amd64.deb || true
         
         # Fix missing dependencies
         sudo apt-get install -f -y
@@ -31,20 +35,36 @@ jobs:
           libssl-dev \
           bc
         
-        # GCC 4.7 ko default banayein
-        sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7 100
-        sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7
+        # Check installed GCC files
+        echo "=== Searching for GCC 4.7 ==="
+        find /usr -name "*gcc-4.7*" 2>/dev/null || true
+        find /usr -name "*arm-linux-gnuabi-gcc*" 2>/dev/null || true
         
-        echo "=== GCC Version ==="
-        arm-linux-gnueabi-gcc --version
-        which arm-linux-gnueabi-gcc
+        # Agar GCC 4.7 available hai toh use karein
+        if [ -f /usr/bin/arm-linux-gnuabi-gcc-4.7 ]; then
+          sudo update-alternatives --install /usr/bin/arm-linux-gnuabi-gcc arm-linux-gnuabi-gcc /usr/bin/arm-linux-gnuabi-gcc-4.7 100
+          sudo update-alternatives --set arm-linux-gnuabi-gcc /usr/bin/arm-linux-gnuabi-gcc-4.7
+          echo "=== Using GCC 4.7 ==="
+          arm-linux-gnuabi-gcc --version
+          export CC=arm-linux-gnuabi-gcc
+          export CROSS_COMPILE=arm-linux-gnuabi-
+        else
+          echo "=== GCC 4.7 not found, installing default GCC ==="
+          sudo apt-get install -y gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+          export CC=arm-linux-gnueabi-gcc
+          export CROSS_COMPILE=arm-linux-gnueabi-
+        fi
+        
+        # Set environment variables
+        echo "CC=$CC" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
     
     - name: Setup kernel build
       run: |
         cd kernel/e5885-kernel-3.10
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- mrproper
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- defconfig
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules_prepare
+        make ARCH=arm CROSS_COMPILE=${CROSS_COMPILE} mrproper
+        make ARCH=arm CROSS_COMPILE=${CROSS_COMPILE} defconfig
+        make ARCH=arm CROSS_COMPILE=${CROSS_COMPILE} modules_prepare
         
     - name: Download AmneziaWG source
       run: |
@@ -60,8 +80,8 @@ jobs:
         make -C . \
           M=drivers/net/amneziawg \
           ARCH=arm \
-          CROSS_COMPILE=arm-linux-gnueabi- \
-          CC=arm-linux-gnueabi-gcc \
+          CROSS_COMPILE=${CROSS_COMPILE} \
+          CC=${CC} \
           CONFIG_ZINC_ARCH_ARM=n \
           V=1 \
           modules
@@ -71,7 +91,7 @@ jobs:
         cd kernel/e5885-kernel-3.10
         if [ -f drivers/net/amneziawg/amneziawg.ko ]; then
           cp drivers/net/amneziawg/amneziawg.ko ./
-          arm-linux-gnueabi-strip --strip-unneeded amneziawg.ko
+          ${CROSS_COMPILE}strip --strip-unneeded amneziawg.ko
           
           echo "=== Module Information ==="
           file amneziawg.ko
