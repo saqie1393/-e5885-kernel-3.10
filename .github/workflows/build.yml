@@ -42,7 +42,7 @@ jobs:
     
     - name: Setup kernel build
       run: |
-        cd kernel/e5885-kernel-3.10
+        cd kernel   # ← YAHAN CHANGE
         export PATH=/opt/gcc-4.7/bin:$PATH
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- mrproper
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
@@ -50,7 +50,7 @@ jobs:
         
     - name: Download AmneziaWG source
       run: |
-        cd kernel/e5885-kernel-3.10
+        cd kernel   # ← YAHAN CHANGE
         git clone --branch v2.0 https://github.com/amnezia-vpn/amneziawg-go.git ../amneziawg
         ln -s ../amneziawg ./drivers/net/amneziawg
         cd drivers/net/amneziawg
@@ -58,7 +58,7 @@ jobs:
         
     - name: Build AmneziaWG module
       run: |
-        cd kernel/e5885-kernel-3.10
+        cd kernel   # ← YAHAN CHANGE
         export PATH=/opt/gcc-4.7/bin:$PATH
         make -C . \
           M=drivers/net/amneziawg \
@@ -71,7 +71,7 @@ jobs:
     
     - name: Strip and verify module
       run: |
-        cd kernel/e5885-kernel-3.10
+        cd kernel   # ← YAHAN CHANGE
         export PATH=/opt/gcc-4.7/bin:$PATH
         if [ -f drivers/net/amneziawg/amneziawg.ko ]; then
           cp drivers/net/amneziawg/amneziawg.ko ./
@@ -93,4 +93,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: amneziawg-e5885-linaro-gcc47
-        path: kernel/e5885-kernel-3.10/amneziawg.ko
+        path: kernel/amneziawg.ko   # ← YAHAN BHI CHANGE
