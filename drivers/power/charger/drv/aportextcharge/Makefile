@@ -1,0 +1,1 @@
+obj-y	+=	extcharge_monitor.o

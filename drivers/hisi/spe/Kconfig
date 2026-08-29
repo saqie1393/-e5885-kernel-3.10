@@ -1,0 +1,5 @@
+menu "SPE Drivers"
+
+source "drivers/hisi/spe/spe_drv/Kconfig"
+
+endmenu

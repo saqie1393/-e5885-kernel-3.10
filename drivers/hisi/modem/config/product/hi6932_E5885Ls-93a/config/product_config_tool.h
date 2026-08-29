@@ -1,0 +1,29 @@
+/* MD5: 8fff496e25cb67ad074275d7c6ccd813*/
+#if !defined(__PRODUCT_CONFIG_TOOL_H__)
+#define __PRODUCT_CONFIG_TOOL_H__
+
+#ifndef PRODUCT_CONTROL_VERSION
+#define PRODUCT_CONTROL_VERSION "131" 
+#endif 
+
+#ifndef PRODUCT_HISILICON_VERSION
+#define PRODUCT_HISILICON_VERSION hi6932 
+#endif 
+
+#ifndef PRODUCT_NV_FILE_MAX_SIZE
+#define PRODUCT_NV_FILE_MAX_SIZE binfileLimitSize "100" 
+#endif 
+
+#ifndef PRODUCT_NV_BIN_MODEM_NUNBER
+#define PRODUCT_NV_BIN_MODEM_NUNBER bin_modem_number "1" 
+#endif 
+
+#ifndef PRODUCT_NV_XNV_PDT_VERSION
+#define PRODUCT_NV_XNV_PDT_VERSION hi6932_e5885 
+#endif 
+
+#ifndef PRODUCT_NV_XNV_SUPPORT_WRITE_PRIORITY
+#define PRODUCT_NV_XNV_SUPPORT_WRITE_PRIORITY xnv_support_write_priority "1" 
+#endif 
+
+#endif /*__PRODUCT_CONFIG_H__*/ 

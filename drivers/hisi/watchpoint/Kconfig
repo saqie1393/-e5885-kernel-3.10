@@ -1,0 +1,15 @@
+#
+# Balong watchpoint configuration
+#
+
+config HISI_WATCHPOINT
+	tristate "hisi watchpoint"
+	default n
+	help
+		balong watchpoint for kernel
+		
+config HISI_WATCHPOINT_DEBUGFS
+	tristate "hisi watchpoint debugfs"
+	default n
+	help
+		balong watchpoint fs for kernel		

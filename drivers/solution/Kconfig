@@ -1,0 +1,6 @@
+
+config FLIGHT_MODE
+        tristate "flightmode"
+        default n	
+	help
+          flightmode driver

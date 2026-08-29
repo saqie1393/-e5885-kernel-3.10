@@ -1,0 +1,5 @@
+config USB_ADC		
+	bool "Enable ADC Feature"		
+	default n		
+	help		
+	If you say y here, the ADC debug infomation whill be compiled.
