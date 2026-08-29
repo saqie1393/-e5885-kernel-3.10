@@ -1,4 +1,4 @@
-name: Build AmneziaWG for E5885 (GCC 4.7)
+name: Build AmneziaWG for E5885 (GCC 4.7 - Docker)
 
 on:
   push:
@@ -7,18 +7,17 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    
+    runs-on: ubuntu-latest
+    container: ubuntu:18.04   # 在Ubuntu 18.04容器中运行
+
     steps:
     - name: Checkout source code
       uses: actions/checkout@v4
-    
+
     - name: Install GCC 4.7 and dependencies
       run: |
-        sudo apt-get update
-        
-        # GCC 4.7 ARM cross-compiler install karein
-        sudo apt-get install -y \
+        apt-get update
+        apt-get install -y \
           gcc-4.7-arm-linux-gnueabi \
           g++-4.7-arm-linux-gnueabi \
           binutils-arm-linux-gnueabi \
@@ -27,22 +26,25 @@ jobs:
           bison \
           flex \
           libssl-dev \
-          bc
-        
-        # GCC 4.7 ko default banayein
-        sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7 100
-        sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7
-        
+          bc \
+          git \
+          wget
+
+        # 设置GCC 4.7为默认编译器
+        update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7 100
+        update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-4.7
+
         echo "=== GCC Version ==="
         arm-linux-gnueabi-gcc --version
-    
+
+    # 后续步骤与之前相同...
     - name: Setup kernel build
       run: |
         cd kernel/e5885-kernel-3.10
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- mrproper
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- defconfig
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules_prepare
-        
+
     - name: Download AmneziaWG source
       run: |
         cd kernel/e5885-kernel-3.10
@@ -50,7 +52,7 @@ jobs:
         ln -s ../amneziawg ./drivers/net/amneziawg
         cd drivers/net/amneziawg
         sed -i 's/CONFIG_ZINC_ARCH_ARM=y/CONFIG_ZINC_ARCH_ARM=n/g' Makefile 2>/dev/null || true
-        
+
     - name: Build AmneziaWG module
       run: |
         cd kernel/e5885-kernel-3.10
@@ -62,18 +64,18 @@ jobs:
           CONFIG_ZINC_ARCH_ARM=n \
           V=1 \
           modules
-    
+
     - name: Strip and verify module
       run: |
         cd kernel/e5885-kernel-3.10
         if [ -f drivers/net/amneziawg/amneziawg.ko ]; then
           cp drivers/net/amneziawg/amneziawg.ko ./
           arm-linux-gnueabi-strip --strip-unneeded amneziawg.ko
-          
+
           echo "=== Module Information ==="
           file amneziawg.ko
           modinfo amneziawg.ko || true
-          
+
           echo "=== Vermagic ==="
           modinfo amneziawg.ko | grep vermagic || echo "Vermagic not found"
         else
@@ -81,7 +83,7 @@ jobs:
           find drivers -name "*.ko" -type f
           exit 1
         fi
-        
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
