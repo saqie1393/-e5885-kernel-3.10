@@ -109,6 +109,7 @@ jobs:
           HOSTCFLAGS=-fcommon \
           modules_prepare
 
+    
     - name: Clone AmneziaWG kernel module
       shell: bash
       run: |
@@ -116,15 +117,34 @@ jobs:
 
         cd "$KERNEL_DIR"
 
+        echo "=== Clone AmneziaWG ==="
+
         git clone \
           https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git \
-          ../amneziawg-kmod
+          "$KERNEL_DIR/../amneziawg-kmod"
 
-        ln -sf ../amneziawg-kmod/src ./drivers/net/amneziawg
+        echo "=== Remove incorrect directory/link ==="
 
-        echo "=== AmneziaWG source structure ==="
-        ls -la ../amneziawg-kmod/
-        ls -la ../amneziawg-kmod/src/ | head -20
+        rm -rf "$KERNEL_DIR/drivers/net/amneziawg"
+
+        echo "=== Create correct symlink ==="
+
+        ln -s \
+          "$(realpath "$KERNEL_DIR/../amneziawg-kmod/src")" \
+          "$KERNEL_DIR/drivers/net/amneziawg"
+
+        echo "=== Verify symlink ==="
+
+        ls -ld "$KERNEL_DIR/drivers/net/amneziawg"
+
+        echo "=== Verify module Makefile ==="
+
+        ls -l "$KERNEL_DIR/drivers/net/amneziawg/Makefile"
+
+        echo "=== Source files ==="
+
+        ls -la "$KERNEL_DIR/drivers/net/amneziawg/"
+
 
     - name: Build AmneziaWG module
       shell: bash
