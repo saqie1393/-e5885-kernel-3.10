@@ -1,12 +1,12 @@
-name: Build and Release AmneziaWG for E5885
+name: Build AmneziaWG v1.0.20251104 (Clean - No Fixes)
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release Version (e.g., v1.0.0)'
+        description: 'Release Version'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.0.20251104'
 
 jobs:
   build:
@@ -57,190 +57,87 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Clone AmneziaWG v1.0.20260725
+    - name: Clone AmneziaWG v1.0.20251104
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        git clone --branch v1.0.20260725 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
+        git clone --branch v1.0.20251104 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
         rm -rf drivers/net/amneziawg
         ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
 
-    - name: Check ip6_dst_lookup_flow signature
-      shell: bash
-      run: |
-        cd "$KERNEL_DIR"
-        echo "--- Declaration in include/net/ipv6.h ---"
-        grep -rn "ip6_dst_lookup_flow" include/net/ipv6.h || echo "NOT FOUND in ipv6.h"
-        echo "--- Declaration anywhere in include/ ---"
-        grep -rn "ip6_dst_lookup_flow" include/ || echo "NOT FOUND anywhere in include/"
-        echo "--- Definition in net/ipv6/ ---"
-        grep -rn "ip6_dst_lookup_flow" net/ipv6/ || echo "NOT FOUND in net/ipv6/"
-
-    - name: Apply compatibility and warning fixes
+    - name: Show AmneziaWG Version Info
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         AWG_SRC="drivers/net/amneziawg"
+        echo "=== AmneziaWG source cloned ==="
+        ls -la "$AWG_SRC" | head -20
+        echo ""
+        echo "=== compat/compat.h first 50 lines ==="
+        head -50 "$AWG_SRC/compat/compat.h" 2>/dev/null || echo "compat.h not found"
+        echo ""
+        echo "=== Check for lspush/lspull in compat-asm.h ==="
+        grep -n "lspush\|lspull" "$AWG_SRC/compat/compat-asm.h" 2>/dev/null || echo "compat-asm.h not found or no lspush/lspull"
+        echo ""
+        echo "=== Check ip6_dst_lookup_flow references ==="
+        grep -rn "ip6_dst_lookup_flow" "$AWG_SRC" 2>/dev/null | head -5 || echo "no references"
 
-        echo "=== 1. Fix ARM CPUID ==="
-        sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$AWG_SRC/compat/compat.h"
-
-        echo "=== 2. Fix fallthrough ==="
-        printf '\n#ifndef fallthrough\n#define fallthrough\n#endif\n' >> "$AWG_SRC/compat/compat.h"
-
-        echo "=== 3. Fix netlink_ext_ack ==="
-        sed -i '1s/^/#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)\nstruct netlink_ext_ack;\n#endif\n/' "$AWG_SRC/device.c"
-
-        echo "=== 4. Fix dev_get_tstats64 ==="
-        sed -i 's|#define dev_get_tstats64 ip_tunnel_get_stats64|#define dev_get_tstats64 dev_get_stats|g' "$AWG_SRC/compat/compat.h"
-
-        echo "=== 5. Fix lspush/lspull (guard redefines in-place) ==="
-        COMPAT_ASM="$AWG_SRC/compat/compat-asm.h"
-        echo "--- compat-asm.h before (lines 40-60) ---"
-        sed -n '40,60p' "$COMPAT_ASM" || true
-
-        # 1. Purana prepended preamble hatao (idempotent re-runs ke liye)
-        sed -i '/^#ifdef lspush$/,/^#endif$/d; /^#ifdef lspull$/,/^#endif$/d' "$COMPAT_ASM"
-
-        # 2. In-file redefines ko guard karo (#ifndef ... #endif)
-        #    Note: '#' ko sed mein literal rakhne ke liye already safe hai
-        sed -i 's|^#define[[:space:]]\+lspush\>|#ifndef lspush\n#define lspush|' "$COMPAT_ASM"
-        sed -i 's|^#define[[:space:]]\+lspull\>|#ifndef lspull\n#define lspull|' "$COMPAT_ASM"
-
-        # 3. Har naye "#define lspush/lspull" ke baad "#endif" insert karo
-        #    (sirf un lines ke baad jo humne abhi wrap ki hain, i.e. jinme #ifndef precedes)
-        awk '
-          BEGIN { prev=""; }
-          {
-            if (prev ~ /^#ifndef lspush$/ && $0 ~ /^#define lspush/) {
-              print $0; print "#endif"; prev=$0; next
-            }
-            if (prev ~ /^#ifndef lspull$/ && $0 ~ /^#define lspull/) {
-              print $0; print "#endif"; prev=$0; next
-            }
-            print $0; prev=$0
-          }
-        ' "$COMPAT_ASM" > /tmp/compat-asm.tmp && mv /tmp/compat-asm.tmp "$COMPAT_ASM"
-
-        echo "--- compat-asm.h after (lines 40-60) ---"
-        sed -n '40,60p' "$COMPAT_ASM" || true
-        echo "compat-asm.h redefines guarded"
-
-        echo "=== 6. Fix blake2s selftest ==="
-        BLAKE2S_SELFTEST="$AWG_SRC/crypto/zinc/selftest/blake2s.c"
-        if [ -f "$BLAKE2S_SELFTEST" ]; then
-          sed -i '1s/^/#ifdef blake2s\n#undef blake2s\n#endif\n/' "$BLAKE2S_SELFTEST"
-          echo "blake2s selftest patched"
-        else
-          echo "WARNING: blake2s.c not found, skipping"
-        fi
-
-        echo "=== 7. Fix ip6_dst_lookup_flow (4-arg legacy for kernel 3.10) ==="
-        printf '%s\n' \
-          '' \
-          '/* Kernel 3.10 compat: ip6_dst_lookup_flow(sk, fl6, final_dst, want_blackhole) */' \
-          '#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0) && !defined(ISRHEL7)' \
-          'static inline struct dst_entry *__compat_ip6_dst_lookup_flow(' \
-          '    struct net *net, struct sock *sk, struct flowi6 *fl6,' \
-          '    const struct in6_addr *final_dst)' \
-          '{' \
-          '    (void)net;' \
-          '    return ip6_dst_lookup_flow(sk, fl6, final_dst, false);' \
-          '}' \
-          '#define ip6_dst_lookup_flow __compat_ip6_dst_lookup_flow' \
-          '#endif' >> "$AWG_SRC/compat/compat.h"
-
-        echo "=== All fixes applied ==="
-                echo "=== 8. Silence C90 mixed-declaration warning in queueing.h ==="
-        QUEUEING_H="$AWG_SRC/queueing.h"
-        if [ -f "$QUEUEING_H" ]; then
-          if ! grep -q 'diagnostic ignored "-Wdeclaration-after-statement"' "$QUEUEING_H"; then
-            # Pragma push + ignore: insert AFTER first "*/" (copyright block end)
-            # Leading whitespace allow karte hain kyunki file mein " */" hai, "*" nahi
-            awk '
-              BEGIN { inserted=0 }
-              !inserted && /^[[:space:]]*\*\/[[:space:]]*$/ {
-                print;
-                print "";
-                print "#pragma GCC diagnostic push";
-                print "#pragma GCC diagnostic ignored \"-Wdeclaration-after-statement\"";
-                inserted=1; next
-              }
-              { print }
-            ' "$QUEUEING_H" > /tmp/queueing.tmp && mv /tmp/queueing.tmp "$QUEUEING_H"
-
-            # Pragma pop: insert right BEFORE the "#endif /* _WG_QUEUEING_H */" guard
-            # Or if not found, append at EOF (fallback)
-            if grep -qE '^#endif[[:space:]]*/\*[[:space:]]*_WG_QUEUEING_H[[:space:]]*\*/' "$QUEUEING_H"; then
-              awk '
-                /^#endif[[:space:]]*\/\*[[:space:]]*_WG_QUEUEING_H[[:space:]]*\*\// {
-                  print "#pragma GCC diagnostic pop";
-                  print "";
-                }
-                { print }
-              ' "$QUEUEING_H" > /tmp/queueing.tmp && mv /tmp/queueing.tmp "$QUEUEING_H"
-            else
-              # Fallback: just append at EOF
-              printf '\n#pragma GCC diagnostic pop\n' >> "$QUEUEING_H"
-              echo "WARNING: #endif _WG_QUEUEING_H not found — pragma pop appended at EOF"
-            fi
-
-            echo "queueing.h patched — C90 warning suppressed"
-          else
-            echo "queueing.h already patched, skipping"
-          fi
-        else
-          echo "WARNING: queueing.h not found, skipping"
-        fi
-        echo "=== All fixes applied ==="
-        
-    - name: Copy ip_tunnel files and update Kbuild
-      shell: bash
-      run: |
-        cd "$KERNEL_DIR"
-        AWG_SRC="drivers/net/amneziawg"
-        CUSTOM_DIR="kernel/drivers/net/ip_tunnel"
-        cp "$CUSTOM_DIR/ip_tunnel.c" "$AWG_SRC/ip_tunnel.c"
-        cp "$CUSTOM_DIR/ip_tunnels.h" "$AWG_SRC/ip_tunnels.h"
-        sed -i '/EXPORT_SYMBOL_GPL/d' "$AWG_SRC/ip_tunnel.c"
-        sed -i 's|^amneziawg-y := \(.*\)|amneziawg-y := \1 ip_tunnel.o|' "$AWG_SRC/Kbuild"
-
-    - name: Build AmneziaWG
+    - name: Build AmneziaWG (Clean - No Fixes)
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
         make -C . M=drivers/net/amneziawg ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc V=1 modules 2>&1 | tee /tmp/build.log
+        echo ""
+        echo "=== Build finished with exit code: $? ==="
+
+    - name: Show Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Full Build Log (warnings/errors highlighted) ==="
+        grep -iE "warning|error" /tmp/build.log || echo "No warnings or errors found"
+        echo ""
+        echo "=== Last 50 lines of build log ==="
+        tail -50 /tmp/build.log 2>/dev/null || echo "build.log not found"
 
     - name: Strip and Verify Module
+      if: success()
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
         MODULE_PATH=$(find -L drivers/net/amneziawg -name "amneziawg.ko" -type f 2>/dev/null | head -1)
-        if [ -z "$MODULE_PATH" ]; then
-          echo "Module not found!"
-          exit 1
-        fi
+        if [ -z "$MODULE_PATH" ]; then echo "Module not found!"; exit 1; fi
         cp "$MODULE_PATH" "$GITHUB_WORKSPACE/amneziawg.ko"
         arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/amneziawg.ko"
         file "$GITHUB_WORKSPACE/amneziawg.ko"
         modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep vermagic || true
 
-    - name: Upload Artifact (Temporary)
+    - name: Upload Build Log as Artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log-${{ github.event.inputs.version }}
+        path: /tmp/build.log
+        if-no-files-found: warn
+
+    - name: Upload Module (if built)
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: amneziawg-E5885-${{ github.event.inputs.version }}
         path: amneziawg.ko
         if-no-files-found: error
 
-    - name: Create GitHub Release and Upload Asset
+    - name: Create Release (if built)
+      if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
         name: AmneziaWG E5885 ${{ github.event.inputs.version }}
         body: |
-          Automated build of AmneziaWG Kernel Module for Huawei E5885.
+          AmneziaWG Kernel Module for Huawei E5885 (clean build, no manual fixes).
           Version: ${{ github.event.inputs.version }}
         files: amneziawg.ko
         draft: false
