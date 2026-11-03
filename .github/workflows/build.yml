@@ -1,5 +1,5 @@
 
-name: Build AmneziaWG for E5885 (Linaro GCC 4.7)
+name: Build AmneziaWG v1.0.20260725 - E5885
 
 on:
   push:
@@ -11,152 +11,131 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout source code
+    - name: Checkout E5885 Kernel
       uses: actions/checkout@v4
 
-    - name: Extract and setup Linaro GCC 4.7
+    - name: Install Build Dependencies
       shell: bash
       run: |
-        set -e
-
-        echo "=== Checking gcc folder ==="
-        ls -la gcc/
-
-        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
-
-        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
-
-        export PATH=/opt/gcc-4.7/bin:$PATH
-
-        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
-        echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
-
-        echo "=== GCC version ==="
-        arm-linux-gnueabihf-gcc --version
-
-        echo "=== GCC test ==="
-        arm-linux-gnueabihf-gcc -v
-
         sudo apt-get update
-
         sudo apt-get install -y \
           build-essential \
           libncurses-dev \
           bison \
           flex \
           libssl-dev \
-          bc
+          bc \
+          git \
+          file
 
-    - name: Detect kernel directory
+    - name: Extract Linaro GCC 4.7
+      shell: bash
+      run: |
+        set -e
+
+        echo "=== GCC Archive ==="
+        ls -lh gcc/
+
+        tar -xjf \
+          gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 \
+          -C /opt/
+
+        sudo mv \
+          /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux \
+          /opt/gcc-4.7
+
+        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+
+        export PATH=/opt/gcc-4.7/bin:$PATH
+
+        arm-linux-gnueabihf-gcc --version
+        arm-linux-gnueabihf-strip --version
+
+    - name: Detect Kernel Directory
       shell: bash
       run: |
         set -e
 
         if [ -f Makefile ] && grep -q "mrproper" Makefile; then
           KERNEL_DIR="."
-          echo "=== Using root directory as kernel ==="
-
-        elif [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
+        elif [ -f kernel/Makefile ]; then
           KERNEL_DIR="kernel"
-          echo "=== Using kernel/ folder ==="
-
         elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
           KERNEL_DIR="kernel/e5885-kernel-3.10"
-          echo "=== Using kernel/e5885-kernel-3.10/ folder ==="
-
         else
-          echo "=== Kernel Makefile not found! ==="
+          echo "Kernel Makefile not found!"
           ls -la
           exit 1
         fi
 
         echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
 
-        cd "$KERNEL_DIR"
-        head -5 Makefile
+        echo "=== Kernel Directory ==="
+        echo "$KERNEL_DIR"
 
-    - name: Setup kernel build
+    - name: Configure E5885 Kernel
       shell: bash
       run: |
         set -e
 
         export PATH=/opt/gcc-4.7/bin:$PATH
-
         cd "$KERNEL_DIR"
 
-        echo "=== GCC verification ==="
-        arm-linux-gnueabihf-gcc --version
+        make ARCH=arm \
+          CROSS_COMPILE=arm-linux-gnueabihf- \
+          HOSTCFLAGS=-fcommon \
+          hi6932_E5885Ls-93a_defconfig
 
-        if [ -f arch/arm/configs/hi6932_E5885Ls-93a_defconfig ]; then
+        echo "=== Kernel Prepare ==="
 
-          echo "=== Using hi6932_E5885Ls-93a_defconfig ==="
-
-          make ARCH=arm \
-            CROSS_COMPILE=arm-linux-gnueabihf- \
-            HOSTCFLAGS=-fcommon \
-            hi6932_E5885Ls-93a_defconfig
-
-        else
-          echo "=== E5885 defconfig not found! ==="
-          ls arch/arm/configs/
-          exit 1
-        fi
-
-        echo "=== Preparing kernel ==="
+        make ARCH=arm \
+          CROSS_COMPILE=arm-linux-gnueabihf- \
+          HOSTCFLAGS=-fcommon \
+          prepare
 
         make ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
           modules_prepare
 
-    
-    - name: Clone AmneziaWG kernel module
+        test -f include/generated/autoconf.h
+        test -f include/config/auto.conf
+
+    - name: Clone AmneziaWG v1.0.20260725
       shell: bash
       run: |
         set -e
 
         cd "$KERNEL_DIR"
 
-        echo "=== Clone AmneziaWG ==="
-
         git clone \
+          --branch v1.0.20260725 \
+          --depth 1 \
           https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git \
-          "$KERNEL_DIR/../amneziawg-kmod"
+          ../amneziawg-kmod
 
-        echo "=== Remove incorrect directory/link ==="
+        rm -rf drivers/net/amneziawg
 
-        rm -rf "$KERNEL_DIR/drivers/net/amneziawg"
+        ln -s "$(realpath ../amneziawg-kmod/src)" \
+          drivers/net/amneziawg
 
-        echo "=== Create correct symlink ==="
+        echo "=== AmneziaWG Version ==="
+        git -C ../amneziawg-kmod describe --tags
 
-        ln -s \
-          "$(realpath "$KERNEL_DIR/../amneziawg-kmod/src")" \
-          "$KERNEL_DIR/drivers/net/amneziawg"
+        echo "=== Module Makefile ==="
+        ls -l drivers/net/amneziawg/Makefile
 
-        echo "=== Verify symlink ==="
-
-        ls -ld "$KERNEL_DIR/drivers/net/amneziawg"
-
-        echo "=== Verify module Makefile ==="
-
-        ls -l "$KERNEL_DIR/drivers/net/amneziawg/Makefile"
-
-        echo "=== Source files ==="
-
-        ls -la "$KERNEL_DIR/drivers/net/amneziawg/"
-
-
-    - name: Build AmneziaWG module
+    - name: Build AmneziaWG
       shell: bash
       run: |
         set -e
         set -o pipefail
 
         export PATH=/opt/gcc-4.7/bin:$PATH
-
         cd "$KERNEL_DIR"
 
-        echo "=== GCC version ==="
+        echo "=== GCC ==="
         arm-linux-gnueabihf-gcc --version
 
         echo "=== Building AmneziaWG ==="
@@ -170,63 +149,51 @@ jobs:
           V=1 \
           modules 2>&1 | tee /tmp/build.log
 
-        echo "=== Build log saved ==="
-
-    - name: Strip and verify module
+    - name: Strip and Verify Module
       shell: bash
       run: |
         set -e
 
         export PATH=/opt/gcc-4.7/bin:$PATH
-
         cd "$KERNEL_DIR"
 
-        MODULE_PATH=$(find . -name "amneziawg.ko" -type f 2>/dev/null | head -1)
+        MODULE_PATH=$(find drivers/net/amneziawg \
+          -name "amneziawg.ko" -type f | head -1)
 
-        if [ -n "$MODULE_PATH" ]; then
-
-          echo "Found module at: $MODULE_PATH"
-
-          cp "$MODULE_PATH" "$GITHUB_WORKSPACE/amneziawg.ko"
-
-          arm-linux-gnueabihf-strip \
-            --strip-unneeded \
-            "$GITHUB_WORKSPACE/amneziawg.ko"
-
-          echo "=== Module Information ==="
-
-          file "$GITHUB_WORKSPACE/amneziawg.ko"
-
-          modinfo "$GITHUB_WORKSPACE/amneziawg.ko" || true
-
-          echo "=== Vermagic ==="
-
-          modinfo "$GITHUB_WORKSPACE/amneziawg.ko" | grep vermagic || true
-
-        else
-
-          echo "=== Module not found! ==="
-
-          find . -name "*.ko" -type f
-
-          echo "=== Build log tail ==="
-
-          tail -100 /tmp/build.log
-
+        if [ -z "$MODULE_PATH" ]; then
+          echo "AmneziaWG module not found!"
+          tail -150 /tmp/build.log
           exit 1
         fi
 
-    - name: Upload artifact
+        echo "=== Module Found ==="
+        echo "$MODULE_PATH"
+
+        cp "$MODULE_PATH" "$GITHUB_WORKSPACE/amneziawg.ko"
+
+        arm-linux-gnueabihf-strip \
+          --strip-unneeded \
+          "$GITHUB_WORKSPACE/amneziawg.ko"
+
+        file "$GITHUB_WORKSPACE/amneziawg.ko"
+
+        echo "=== Module Vermagic ==="
+        modinfo "$GITHUB_WORKSPACE/amneziawg.ko" | grep vermagic || true
+
+        echo "=== Module Size ==="
+        ls -lh "$GITHUB_WORKSPACE/amneziawg.ko"
+
+    - name: Upload AmneziaWG Module
       uses: actions/upload-artifact@v4
       with:
-        name: amneziawg-e5885-gcc47
+        name: amneziawg-E5885-v1.0.20260725
         path: amneziawg.ko
         if-no-files-found: error
 
-    - name: Upload build log on failure
+    - name: Upload Build Log on Failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: e5885-build-error-log
+        name: E5885-AmneziaWG-Build-Log
         path: /tmp/build.log
         if-no-files-found: ignore
