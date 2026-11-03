@@ -92,7 +92,30 @@ jobs:
             }
           ' "$COMPAT_ASM" > /tmp/compat-asm.tmp && mv /tmp/compat-asm.tmp "$COMPAT_ASM"
         fi
-
+        echo "=== 4. Silence C90 mixed-declaration warning ==="
+        QUEUEING_H="$AWG_SRC/queueing.h"
+        if [ -f "$QUEUEING_H" ]; then
+          if ! grep -q 'diagnostic ignored "-Wdeclaration-after-statement"' "$QUEUEING_H"; then
+            awk '
+              BEGIN { inserted=0 }
+              !inserted && /^[[:space:]]*\*\/[[:space:]]*$/ {
+                print; print "";
+                print "#pragma GCC diagnostic push";
+                print "#pragma GCC diagnostic ignored \"-Wdeclaration-after-statement\"";
+                inserted=1; next
+              }
+              { print }
+            ' "$QUEUEING_H" > /tmp/queueing.tmp && mv /tmp/queueing.tmp "$QUEUEING_H"
+            printf '\n#pragma GCC diagnostic pop\n' >> "$QUEUEING_H"
+          fi
+        fi
+        echo "=== 5. Fix netlink_ext_ack forward declaration ==="
+        DEVICE_C="$AWG_SRC/device.c"
+        if [ -f "$DEVICE_C" ]; then
+          if ! grep -q '^struct netlink_ext_ack;' "$DEVICE_C"; then
+            sed -i '1s/^/#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)\nstruct netlink_ext_ack;\n#endif\n/' "$DEVICE_C"
+          fi
+        fi
         echo "=== All fixes applied ==="
 
     - name: Build AmneziaWG (Clean - No Fixes)
