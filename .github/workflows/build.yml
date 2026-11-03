@@ -187,19 +187,16 @@ jobs:
         find . -name "wireguard.h" -type f 2>/dev/null || echo "wireguard.h NOT FOUND"
 
         echo "=== Building awg statically for ARMv7 ==="
-             make CC=arm-linux-gnueabihf-gcc \
-             CFLAGS="-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16 -I. -Iuapi/linux" \
+              make CC=arm-linux-gnueabihf-gcc \
+             CFLAGS='-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16 -I. -Iuapi/linux -DRUNSTATEDIR="/var/run"' \
              LDFLAGS="-static" \
-             RUNSTATEDIR="/var/run" \
              WITH_WGQUICK=yes \
              WITH_BASHCOMPLETION=no \
              WITH_SYSTEMDUNITS=no \
              PREFIX=/usr \
              DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
              2>&1 | tee /tmp/tools-build.log
-        echo "=== Verifying binaries ==="
-        find "$GITHUB_WORKSPACE/awg-tools-out" -type f -exec file {} \; || true
-
+    
     - name: Show Tools Build Log Summary
       if: always()
       shell: bash
