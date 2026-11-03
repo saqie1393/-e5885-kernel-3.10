@@ -1,4 +1,4 @@
-name: Build AmneziaWG v1.0.20251104 + Tools for E5885
+name: Build AmneziaWG v1.0.20251104 + awg tool for E5885
 
 on:
   workflow_dispatch:
@@ -172,7 +172,7 @@ jobs:
         file "$GITHUB_WORKSPACE/amneziawg.ko"
         modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep vermagic || true
 
-    - name: Clone and Build amneziawg-tools v1.0.20260223 (static ARMv7)
+    - name: Clone and Build awg tool v1.0.20260223 (static ARMv7)
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
@@ -186,7 +186,7 @@ jobs:
         echo "=== Checking for wireguard.h ==="
         find . -name "wireguard.h" -type f 2>/dev/null || echo "wireguard.h NOT FOUND"
 
-        # Fix double linux/linux path
+        # Fix double linux/linux path — symlink bana dein
         if [ -f uapi/linux/linux/wireguard.h ] && [ ! -f uapi/linux/wireguard.h ]; then
           ln -s linux/wireguard.h uapi/linux/wireguard.h
           echo "Created symlink: uapi/linux/wireguard.h -> linux/wireguard.h"
@@ -219,8 +219,32 @@ jobs:
              DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
              2>&1 | tee -a /tmp/tools-build.log
 
-        echo "=== Verifying binaries ==="
-        find "$GITHUB_WORKSPACE/awg-tools-out" -type f -exec file {} \; || true
+        echo "=== Verifying awg binary ==="
+        file "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
+
+    - name: Show Tools Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Tools build warnings/errors ==="
+        grep -iE "warning|error" /tmp/tools-build.log || echo "No warnings or errors found"
+
+    - name: Package awg tool (awg only)
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p awg-tools-release
+        if [ ! -f awg-tools-out/usr/bin/awg ]; then
+          echo "ERROR: awg binary not found!"
+          exit 1
+        fi
+        cp awg-tools-out/usr/bin/awg awg-tools-release/
+        chmod +x awg-tools-release/awg
+        tar -czf awg-tools-armv7.tar.gz -C awg-tools-release .
+        ls -la awg-tools-armv7.tar.gz
+        echo "=== Contents of tarball ==="
+        tar -tzf awg-tools-armv7.tar.gz
 
     - name: Upload Kernel Module Artifact
       if: success()
@@ -230,11 +254,11 @@ jobs:
         path: amneziawg.ko
         if-no-files-found: error
 
-    - name: Upload awg Tools Artifact
+    - name: Upload awg Tool Artifact
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: awg-tools-${{ github.event.inputs.version }}
+        name: awg-tool-${{ github.event.inputs.version }}
         path: awg-tools-armv7.tar.gz
         if-no-files-found: error
 
@@ -259,9 +283,19 @@ jobs:
 
           **Contents:**
           - `amneziawg.ko` — Kernel module (vermagic 3.10.100+ ARMv7)
-          - `awg-tools-armv7.tar.gz` — Static `awg` + `awg-quick` binaries for ARMv7
+          - `awg-tools-armv7.tar.gz` — Static `awg` binary for ARMv7
 
-          **Install awg tools:**
+          **Note:** `awg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only). Configure the interface manually with `ip` commands.
+
+          **Install:**
           ```sh
+          # Kernel module
+          insmod /system/modules/amneziawg.ko
+
+          # awg binary
           tar -xzf awg-tools-armv7.tar.gz -C /usr/bin/
-          chmod +x /usr/bin/awg /usr/bin/awg-quick
+          chmod +x /usr/bin/awg
+
+          # Verify
+          awg --version
+          awg show
