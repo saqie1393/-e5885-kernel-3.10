@@ -125,7 +125,20 @@ jobs:
 
         echo "=== Module Makefile ==="
         ls -l drivers/net/amneziawg/Makefile
+     
+    - name: Disable incompatible ARM ChaCha optimization
+      shell: bash
+      run: |
+        set -e
 
+        cd "$KERNEL_DIR/drivers/net/amneziawg"
+
+        sed -i \
+          's/chacha20-arm-glue.o//' \
+          crypto/zinc/chacha20/Makefile
+
+        echo "=== Updated ChaCha Makefile ==="
+        cat crypto/zinc/chacha20/Makefile
     - name: Build AmneziaWG
       shell: bash
       run: |
