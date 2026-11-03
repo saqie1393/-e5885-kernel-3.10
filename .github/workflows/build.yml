@@ -78,15 +78,15 @@ jobs:
 
         echo "=== Building awg and awg-quick statically for ARMv7 ==="
         # Static linking zaroori hai taaki BusyBox environment mein chale
-        make CC=arm-linux-gnueabihf-gcc \
-             CFLAGS="-static -O2 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16" \
+             make CC=arm-linux-gnueabihf-gcc \
+             CFLAGS="-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16" \
              LDFLAGS="-static" \
              WITH_WGQUICK=yes \
              WITH_BASHCOMPLETION=no \
              WITH_SYSTEMDUNITS=no \
              PREFIX=/usr \
              DESTDIR="$GITHUB_WORKSPACE/awg-tools-out"
-
+        
         echo "=== Verifying binaries ==="
         file "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
         # awg-quick bash script hai, binary nahi
