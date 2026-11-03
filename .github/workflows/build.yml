@@ -151,7 +151,49 @@ jobs:
           '#endif' >> "$AWG_SRC/compat/compat.h"
 
         echo "=== All fixes applied ==="
+                echo "=== 8. Silence C90 mixed-declaration warning in queueing.h ==="
+        QUEUEING_H="$AWG_SRC/queueing.h"
+        if [ -f "$QUEUEING_H" ]; then
+          if ! grep -q 'diagnostic ignored "-Wdeclaration-after-statement"' "$QUEUEING_H"; then
+            # Pragma push + ignore: insert AFTER first "*/" (copyright block end)
+            # Leading whitespace allow karte hain kyunki file mein " */" hai, "*" nahi
+            awk '
+              BEGIN { inserted=0 }
+              !inserted && /^[[:space:]]*\*\/[[:space:]]*$/ {
+                print;
+                print "";
+                print "#pragma GCC diagnostic push";
+                print "#pragma GCC diagnostic ignored \"-Wdeclaration-after-statement\"";
+                inserted=1; next
+              }
+              { print }
+            ' "$QUEUEING_H" > /tmp/queueing.tmp && mv /tmp/queueing.tmp "$QUEUEING_H"
 
+            # Pragma pop: insert right BEFORE the "#endif /* _WG_QUEUEING_H */" guard
+            # Or if not found, append at EOF (fallback)
+            if grep -qE '^#endif[[:space:]]*/\*[[:space:]]*_WG_QUEUEING_H[[:space:]]*\*/' "$QUEUEING_H"; then
+              awk '
+                /^#endif[[:space:]]*\/\*[[:space:]]*_WG_QUEUEING_H[[:space:]]*\*\// {
+                  print "#pragma GCC diagnostic pop";
+                  print "";
+                }
+                { print }
+              ' "$QUEUEING_H" > /tmp/queueing.tmp && mv /tmp/queueing.tmp "$QUEUEING_H"
+            else
+              # Fallback: just append at EOF
+              printf '\n#pragma GCC diagnostic pop\n' >> "$QUEUEING_H"
+              echo "WARNING: #endif _WG_QUEUEING_H not found — pragma pop appended at EOF"
+            fi
+
+            echo "queueing.h patched — C90 warning suppressed"
+          else
+            echo "queueing.h already patched, skipping"
+          fi
+        else
+          echo "WARNING: queueing.h not found, skipping"
+        fi
+        echo "=== All fixes applied ==="
+        
     - name: Copy ip_tunnel files and update Kbuild
       shell: bash
       run: |
