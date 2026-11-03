@@ -74,6 +74,25 @@ jobs:
         echo "=== 1. Fix ARM CPUID ==="
         sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$AWG_SRC/compat/compat.h" || true
 
+        echo "=== 2. Fix fallthrough ==="
+        printf '\n#ifndef fallthrough\n#define fallthrough\n#endif\n' >> "$AWG_SRC/compat/compat.h"
+
+        echo "=== 3. Fix lspush/lspull redefines ==="
+        COMPAT_ASM="$AWG_SRC/compat/compat-asm.h"
+        if [ -f "$COMPAT_ASM" ]; then
+          sed -i '/^#ifdef lspush$/,/^#endif$/d; /^#ifdef lspull$/,/^#endif$/d' "$COMPAT_ASM" || true
+          sed -i 's|^#define[[:space:]]\+lspush\>|#ifndef lspush\n#define lspush|' "$COMPAT_ASM" || true
+          sed -i 's|^#define[[:space:]]\+lspull\>|#ifndef lspull\n#define lspull|' "$COMPAT_ASM" || true
+          awk '
+            BEGIN { prev=""; }
+            {
+              if (prev ~ /^#ifndef lspush$/ && $0 ~ /^#define lspush/) { print $0; print "#endif"; prev=$0; next }
+              if (prev ~ /^#ifndef lspull$/ && $0 ~ /^#define lspull/) { print $0; print "#endif"; prev=$0; next }
+              print $0; prev=$0
+            }
+          ' "$COMPAT_ASM" > /tmp/compat-asm.tmp && mv /tmp/compat-asm.tmp "$COMPAT_ASM"
+        fi
+
         echo "=== All fixes applied ==="
 
     - name: Build AmneziaWG (Clean - No Fixes)
