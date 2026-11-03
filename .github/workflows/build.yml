@@ -65,28 +65,62 @@ jobs:
         rm -rf drivers/net/amneziawg
         ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
 
-    - name: Apply compatibility fixes (safe echo method)
+    - name: Apply all compatibility and warning fixes
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         AWG_SRC="drivers/net/amneziawg"
         
-        # 1. Fix ARM CPUID
+        echo "=== 1. Fix ARM CPUID ==="
         sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$AWG_SRC/compat/compat.h"
         
-        # 2. Fix fallthrough
+        echo "=== 2. Fix fallthrough ==="
         echo -e "\n#ifndef fallthrough\n#define fallthrough\n#endif" >> "$AWG_SRC/compat/compat.h"
         
-        # 3. Fix netlink_ext_ack
-        echo -e "\n#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)\nstruct netlink_ext_ack;\n#endif" >> "$AWG_SRC/compat/compat.h"
+        echo "=== 3. Fix netlink_ext_ack (device.c ke top par) ==="
+        sed -i '1s/^/#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)\nstruct netlink_ext_ack;\n#endif\n/' "$AWG_SRC/device.c"
         
-        # 4. Fix dev_get_tstats64
+        echo "=== 4. Fix dev_get_tstats64 ==="
         sed -i 's|#define dev_get_tstats64 ip_tunnel_get_stats64|#define dev_get_tstats64 dev_get_stats|g' "$AWG_SRC/compat/compat.h"
         
-        # 5. Fix lspush/lspull
+        echo "=== 5. Fix lspush/lspull ==="
         echo -e "\n#ifdef lspush\n#undef lspush\n#endif\n#ifdef lspull\n#undef lspull\n#endif" >> "$AWG_SRC/compat/compat-asm.h"
         
-        # 6. blake2s warning ko ignore karo (harmless hai, koi fix nahi chahiye)
+        echo "=== 6. Fix ip6_dst_lookup_flow (socket.c) ==="
+        sed -i 's|ip6_dst_lookup_flow(sock_net(sock), sock, &fl, NULL)|ip6_dst_lookup_flow(sock, sock, \&fl, NULL)|g' "$AWG_SRC/socket.c"
+        
+        echo "=== 7. Fix C90 declaration in queueing.h (safe approach) ==="
+        # wg_reset_packet function ke shuru mein variables ko shift karna
+        # Hum sirf us block ko replace kar rahe hain, poora function nahi.
+        awk '
+        BEGIN { in_func = 0 }
+        /^static inline void wg_reset_packet/ { in_func = 1; print; next }
+        in_func {
+            if ($0 ~ /^}/) { in_func = 0; print; next }
+            # Variables ko pehle print karo
+            if ($0 ~ /u8 l4_hash = skb->l4_hash;/) {
+                print "\tu8 l4_hash = skb->l4_hash;"
+                print "\tu8 sw_hash = skb->sw_hash;"
+                print "\tu32 hash = skb->hash;"
+                print ""
+                next
+            }
+            # Original declarations ko skip karo
+            if ($0 ~ /u8 sw_hash = skb->sw_hash;/) next
+            if ($0 ~ /u32 hash = skb->hash;/) next
+            print
+        }
+        !in_func { print }
+        ' "$AWG_SRC/queueing.h" > "$AWG_SRC/queueing.h.tmp" && mv "$AWG_SRC/queueing.h.tmp" "$AWG_SRC/queueing.h"
+
+        echo "=== 8. Fix blake2s selftest (macro undef) ==="
+        # Selftest file mein blake2s macro ko undefine karo
+        SELFTEST_FILE="$AWG_SRC/crypto/zinc/blake2s/selftest/blake2s.c"
+        if [ -f "$SELFTEST_FILE" ]; then
+            sed -i '1s/^/#ifdef blake2s\n#undef blake2s\n#endif\n/' "$SELFTEST_FILE"
+        fi
+
+        echo "=== All fixes applied ==="
 
     - name: Copy ip_tunnel files and update Kbuild
       shell: bash
