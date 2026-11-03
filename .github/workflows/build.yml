@@ -65,22 +65,16 @@ jobs:
         rm -rf drivers/net/amneziawg
         ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
 
-    - name: Show AmneziaWG Version Info
+    - name: Apply compatibility fixes
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         AWG_SRC="drivers/net/amneziawg"
-        echo "=== AmneziaWG source cloned ==="
-        ls -la "$AWG_SRC" | head -20
-        echo ""
-        echo "=== compat/compat.h first 50 lines ==="
-        head -50 "$AWG_SRC/compat/compat.h" 2>/dev/null || echo "compat.h not found"
-        echo ""
-        echo "=== Check for lspush/lspull in compat-asm.h ==="
-        grep -n "lspush\|lspull" "$AWG_SRC/compat/compat-asm.h" 2>/dev/null || echo "compat-asm.h not found or no lspush/lspull"
-        echo ""
-        echo "=== Check ip6_dst_lookup_flow references ==="
-        grep -rn "ip6_dst_lookup_flow" "$AWG_SRC" 2>/dev/null | head -5 || echo "no references"
+
+        echo "=== 1. Fix ARM CPUID ==="
+        sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$AWG_SRC/compat/compat.h" || true
+
+        echo "=== All fixes applied ==="
 
     - name: Build AmneziaWG (Clean - No Fixes)
       shell: bash
