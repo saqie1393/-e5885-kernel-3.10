@@ -1,4 +1,4 @@
-name: Build AmneziaWG v1.0.20251104 (Clean - No Fixes)
+name: Build AmneziaWG v1.0.20251104 + Tools for E5885
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch
 
     - name: Extract Linaro GCC 4.7
       shell: bash
@@ -48,7 +48,7 @@ jobs:
         fi
         echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
 
-    - name: Configure E5885 Kernel
+    - name: Configure E5885 Kernel (ARM)
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
@@ -57,23 +57,14 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Clone AmneziaWG v1.0.20251104
+    - name: Clone AmneziaWG Kernel Module v1.0.20251104
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         git clone --branch v1.0.20251104 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
         rm -rf drivers/net/amneziawg
         ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
-    
-            make CC=arm-linux-gnueabihf-gcc \
-             CFLAGS="-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16 -I. -Iuapi" \
-             LDFLAGS="-static" \
-             WITH_WGQUICK=yes \
-             WITH_BASHCOMPLETION=no \
-             WITH_SYSTEMDUNITS=no \
-             PREFIX=/usr \
-             DESTDIR="$GITHUB_WORKSPACE/awg-tools-out"
-    
+
     - name: Apply compatibility patches (repo patch file)
       shell: bash
       run: |
@@ -84,7 +75,6 @@ jobs:
         echo "=== Trying to apply permanent patch file ==="
         PATCH_APPLIED=1
         if [ -f "$PATCH_FILE" ]; then
-          # Try git apply first (strict)
           if git apply --check -p1 --directory=. "$PATCH_FILE" 2>/dev/null; then
             git apply -p1 "$PATCH_FILE"
             echo "✅ Patch applied via git apply"
@@ -100,10 +90,8 @@ jobs:
           PATCH_APPLIED=0
         fi
 
-        # Fallback inline fixes (idempotent) — only if patch didn't apply
         if [ "$PATCH_APPLIED" = "0" ]; then
           echo "=== Applying inline compatibility fixes ==="
-
           echo "--- 1. ARM CPUID ---"
           sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$AWG_SRC/compat/compat.h" || true
 
@@ -153,32 +141,25 @@ jobs:
               sed -i '1s/^/#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)\nstruct netlink_ext_ack;\n#endif\n/' "$DEVICE_C"
             fi
           fi
-
           echo "=== Inline fixes applied ==="
         fi
-
         echo "=== All compatibility handling done ==="
 
-    - name: Build AmneziaWG (Clean - No Fixes)
+    - name: Build AmneziaWG Kernel Module
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
         make -C . M=drivers/net/amneziawg ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc V=1 modules 2>&1 | tee /tmp/build.log
-        echo ""
-        echo "=== Build finished with exit code: $? ==="
 
-    - name: Show Build Log Summary
+    - name: Show Kernel Build Log Summary
       if: always()
       shell: bash
       run: |
-        echo "=== Full Build Log (warnings/errors highlighted) ==="
+        echo "=== Kernel build warnings/errors ==="
         grep -iE "warning|error" /tmp/build.log || echo "No warnings or errors found"
-        echo ""
-        echo "=== Last 50 lines of build log ==="
-        tail -50 /tmp/build.log 2>/dev/null || echo "build.log not found"
 
-    - name: Strip and Verify Module
+    - name: Strip and Verify Kernel Module
       if: success()
       shell: bash
       run: |
@@ -191,31 +172,93 @@ jobs:
         file "$GITHUB_WORKSPACE/amneziawg.ko"
         modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep vermagic || true
 
-    - name: Upload Build Log as Artifact
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-log-${{ github.event.inputs.version }}
-        path: /tmp/build.log
-        if-no-files-found: warn
+    - name: Clone and Build amneziawg-tools v1.0.20260223 (static ARMv7)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        TOOLS_DIR="amneziawg-tools-src"
 
-    - name: Upload Module (if built)
+        echo "=== Cloning amneziawg-tools v1.0.20260223 ==="
+        git clone --branch v1.0.20260223 --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git "../$TOOLS_DIR"
+        cd "../$TOOLS_DIR/src"
+
+        echo "=== Checking for wireguard.h ==="
+        find . -name "wireguard.h" -type f 2>/dev/null || echo "wireguard.h NOT FOUND"
+
+        echo "=== Building awg statically for ARMv7 ==="
+        make CC=arm-linux-gnueabihf-gcc \
+             CFLAGS="-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16 -I. -Iuapi" \
+             LDFLAGS="-static" \
+             WITH_WGQUICK=yes \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
+             2>&1 | tee /tmp/tools-build.log
+
+        echo "=== Verifying binaries ==="
+        find "$GITHUB_WORKSPACE/awg-tools-out" -type f -exec file {} \; || true
+
+    - name: Show Tools Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Tools build warnings/errors ==="
+        grep -iE "warning|error" /tmp/tools-build.log || echo "No warnings or errors found"
+
+    - name: Package awg tools
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p awg-tools-release
+        cp awg-tools-out/usr/bin/awg awg-tools-release/ 2>/dev/null || echo "awg not found"
+        cp awg-tools-out/usr/bin/awg-quick awg-tools-release/ 2>/dev/null || echo "awg-quick not found"
+        chmod +x awg-tools-release/* 2>/dev/null || true
+        tar -czf awg-tools-armv7.tar.gz -C awg-tools-release .
+        ls -la awg-tools-armv7.tar.gz
+
+    - name: Upload Kernel Module Artifact
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: amneziawg-E5885-${{ github.event.inputs.version }}
+        name: amneziawg-ko-${{ github.event.inputs.version }}
         path: amneziawg.ko
         if-no-files-found: error
 
-    - name: Create Release (if built)
+    - name: Upload awg Tools Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: awg-tools-${{ github.event.inputs.version }}
+        path: awg-tools-armv7.tar.gz
+        if-no-files-found: error
+
+    - name: Upload Build Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.event.inputs.version }}
+        path: |
+          /tmp/build.log
+          /tmp/tools-build.log
+        if-no-files-found: warn
+
+    - name: Create Release
       if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
         name: AmneziaWG E5885 ${{ github.event.inputs.version }}
         body: |
-          AmneziaWG Kernel Module for Huawei E5885 (clean build, no manual fixes).
-          Version: ${{ github.event.inputs.version }}
-        files: amneziawg.ko
-        draft: false
-        prerelease: false
+          AmneziaWG for Huawei E5885 (kernel 3.10)
+
+          **Contents:**
+          - `amneziawg.ko` — Kernel module (vermagic 3.10.100+ ARMv7)
+          - `awg-tools-armv7.tar.gz` — Static `awg` + `awg-quick` binaries for ARMv7
+
+          **Install awg tools:**
+          ```sh
+          tar -xzf awg-tools-armv7.tar.gz -C /usr/bin/
+          chmod +x /usr/bin/awg /usr/bin/awg-quick
