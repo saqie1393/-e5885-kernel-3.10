@@ -65,19 +65,14 @@ jobs:
         
         export PATH=/opt/gcc-4.7/bin:$PATH
         
-        # E5885 ke liye ARM defconfig use karein (agar available ho)
-        if [ -f arch/arm/configs/e5885_defconfig ]; then
-          echo "=== Using e5885_defconfig ==="
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- e5885_defconfig
-        elif [ -f arch/arm/configs/hi6932_defconfig ]; then
-          echo "=== Using hi6932_defconfig ==="
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- hi6932_defconfig
+        # E5885 ka exact defconfig use karein
+        if [ -f arch/arm/configs/hi6932_E5885Ls-93a_defconfig ]; then
+          echo "=== Using hi6932_E5885Ls-93a_defconfig ==="
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- hi6932_E5885Ls-93a_defconfig
         else
-          echo "=== No device-specific defconfig found, listing available ARM configs ==="
-          ls arch/arm/configs/ | head -20
-          echo "=== Falling back to multi_v7_defconfig ==="
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- multi_v7_defconfig || \
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
+          echo "=== E5885 defconfig not found! Available configs: ==="
+          ls arch/arm/configs/
+          exit 1
         fi
         
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules_prepare
