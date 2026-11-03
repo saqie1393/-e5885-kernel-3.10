@@ -94,9 +94,25 @@ jobs:
         echo "=== 4. Fix dev_get_tstats64 ==="
         sed -i 's|#define dev_get_tstats64 ip_tunnel_get_stats64|#define dev_get_tstats64 dev_get_stats|g' "$AWG_SRC/compat/compat.h"
 
-        echo "=== 5. Fix lspush/lspull ==="
-        printf '#ifdef lspush\n#undef lspush\n#endif\n#ifdef lspull\n#undef lspull\n#endif\n' | cat - "$AWG_SRC/compat/compat-asm.h" > /tmp/compat-asm.tmp
-        mv /tmp/compat-asm.tmp "$AWG_SRC/compat/compat-asm.h"
+        echo "=== 5. Fix lspush/lspull (silence redefinition) ==="
+        # AmneziaWG ka compat-asm.h khud lspush/lspull ko #undef + #define karta hai,
+        # lekin arch/arm/include/asm/assembler.h pehle hi inhe define kar chuka hota hai.
+        # Isliye preamble me "#ifdef -> #undef" lagane se redefinition warning aati hai.
+        # Sahi solution: hamari prepended lines me sidha #ifndef ke andar wrap karo,
+        # ya unhe hata kar AmneziaWG ke apne #undef par bharosa karo.
+        # Yahan hum preamble ko clean karke sirf tab undef karte hain jab already defined ho.
+        COMPAT_ASM="$AWG_SRC/compat/compat-asm.h"
+        # Remove any previously prepended preamble (idempotent re-runs)
+        sed -i '/^#ifdef lspush$/,/^#endif$/d; /^#ifdef lspull$/,/^#endif$/d' "$COMPAT_ASM"
+        # Prepend a guarded version that only undefs if defined (no redefinition warning)
+        printf '%s\n' \
+          '#ifdef lspush' \
+          '#undef lspush' \
+          '#endif' \
+          '#ifdef lspull' \
+          '#undef lspull' \
+          '#endif' | cat - "$COMPAT_ASM" > /tmp/compat-asm.tmp
+        mv /tmp/compat-asm.tmp "$COMPAT_ASM"
 
         echo "=== 6. Fix blake2s selftest ==="
         BLAKE2S_SELFTEST="$AWG_SRC/crypto/zinc/selftest/blake2s.c"
@@ -107,16 +123,17 @@ jobs:
           echo "WARNING: blake2s.c not found, skipping"
         fi
 
-        echo "=== 7. Fix ip6_dst_lookup_flow (recursion-free wrapper, 4-arg) ==="
+        echo "=== 7. Fix ip6_dst_lookup_flow (3-arg for kernel 3.10) ==="
         printf '%s\n' \
           '' \
-          '/* Kernel 3.10 compat: ip6_dst_lookup_flow(net, sk, fl6, final_dst) */' \
+          '/* Kernel 3.10 compat: ip6_dst_lookup_flow(sk, fl6, final_dst) */' \
           '#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0) && !defined(ISRHEL7)' \
           'static inline struct dst_entry *__compat_ip6_dst_lookup_flow(' \
           '    struct net *net, struct sock *sk, struct flowi6 *fl6,' \
           '    const struct in6_addr *final_dst)' \
           '{' \
-          '    return ip6_dst_lookup_flow(net, sk, fl6, final_dst);' \
+          '    (void)net;' \
+          '    return ip6_dst_lookup_flow(sk, fl6, final_dst);' \
           '}' \
           '#define ip6_dst_lookup_flow __compat_ip6_dst_lookup_flow' \
           '#endif' >> "$AWG_SRC/compat/compat.h"
