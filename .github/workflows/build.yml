@@ -1,4 +1,4 @@
-name: Build AmneziaWG Kernel Module for E5885 (GCC 4.7)
+name: Build AmneziaWG for E5885 (Linaro GCC 4.7)
 
 on:
   push:
@@ -35,36 +35,54 @@ jobs:
           libssl-dev \
           bc
     
-    - name: Setup kernel build (with ARM config)
+    - name: Detect kernel directory
       run: |
-        # Kernel folder detect karein
-        if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
+        # Root Makefile check karein (aapke repo mein kernel root mein hai)
+        if [ -f Makefile ] && grep -q "mrproper" Makefile; then
+          KERNEL_DIR="."
+          echo "=== Using root directory as kernel ==="
+        elif [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
           KERNEL_DIR="kernel"
+          echo "=== Using kernel/ folder ==="
         elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
           KERNEL_DIR="kernel/e5885-kernel-3.10"
+          echo "=== Using kernel/e5885-kernel-3.10/ folder ==="
         else
-          echo "Kernel Makefile not found!"
+          echo "=== Kernel Makefile not found! ==="
+          ls -la
           exit 1
         fi
         
         echo "KERNEL_DIR=$KERNEL_DIR" >> $GITHUB_ENV
+        
+        # Kernel version confirm karein
+        cd "$KERNEL_DIR"
+        head -5 Makefile
+    
+    - name: Setup kernel build
+      run: |
         cd "$KERNEL_DIR"
         
         export PATH=/opt/gcc-4.7/bin:$PATH
         
         # E5885 ke liye ARM defconfig use karein (agar available ho)
         if [ -f arch/arm/configs/e5885_defconfig ]; then
+          echo "=== Using e5885_defconfig ==="
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- e5885_defconfig
+        elif [ -f arch/arm/configs/hi6932_defconfig ]; then
+          echo "=== Using hi6932_defconfig ==="
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- hi6932_defconfig
         else
-          # Fallback: generic ARM defconfig, lekin yeh E5885 ke liye optimal nahi ho sakta
-          echo "e5885_defconfig not found, trying multi_v7_defconfig..."
+          echo "=== No device-specific defconfig found, listing available ARM configs ==="
+          ls arch/arm/configs/ | head -20
+          echo "=== Falling back to multi_v7_defconfig ==="
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- multi_v7_defconfig || \
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
         fi
         
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules_prepare
     
-    - name: Clone AmneziaWG kernel module (correct repo)
+    - name: Clone AmneziaWG kernel module
       run: |
         cd "$KERNEL_DIR"
         
@@ -72,7 +90,11 @@ jobs:
         git clone https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
         
         # Kernel module source ko drivers/net mein link karein
-        ln -s ../amneziawg-kmod/src ./drivers/net/amneziawg
+        ln -sf ../amneziawg-kmod/src ./drivers/net/amneziawg
+        
+        echo "=== AmneziaWG source structure ==="
+        ls -la ../amneziawg-kmod/
+        ls -la ../amneziawg-kmod/src/ | head -20
     
     - name: Build AmneziaWG module
       run: |
@@ -81,7 +103,6 @@ jobs:
         export PATH=/opt/gcc-4.7/bin:$PATH
         
         # AmneziaWG ka build system src/ folder ke andar hai
-        # Hum kernel tree ke through module compile kar rahe hain
         make -C . \
           M=drivers/net/amneziawg \
           ARCH=arm \
@@ -90,10 +111,7 @@ jobs:
           V=1 \
           modules 2>&1 | tee /tmp/build.log
         
-        # Build log mein errors check karein (optional, lekin helpful)
-        if grep -q "Error" /tmp/build.log; then
-          echo "=== Build errors detected, see log above ==="
-        fi
+        echo "=== Build log saved to /tmp/build.log ==="
     
     - name: Strip and verify module
       run: |
