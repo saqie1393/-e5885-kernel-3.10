@@ -1,4 +1,4 @@
-name: Build AmneziaWG for E5885 (Linaro GCC 4.7)
+name: Build AmneziaWG Kernel Module for E5885 (GCC 4.7)
 
 on:
   push:
@@ -35,103 +35,98 @@ jobs:
           libssl-dev \
           bc
     
-    - name: Debug - Check kernel folder structure
+    - name: Setup kernel build (with ARM config)
       run: |
-        echo "=== Current directory ==="
-        pwd
-        echo "=== List all files in root ==="
-        ls -la
-        echo "=== Check kernel folder ==="
-        ls -la kernel/ || echo "kernel folder not found"
-        echo "=== Check if Makefile exists ==="
-        find . -name "Makefile" -type f | head -10
-    
-    - name: Setup kernel build
-      run: |
-        # Pehle check karein ke kaunsa folder sahi hai
+        # Kernel folder detect karein
         if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
-          echo "=== Using kernel/ folder ==="
-          cd kernel
+          KERNEL_DIR="kernel"
         elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
-          echo "=== Using kernel/e5885-kernel-3.10/ folder ==="
-          cd kernel/e5885-kernel-3.10
+          KERNEL_DIR="kernel/e5885-kernel-3.10"
         else
-          echo "=== Makefile with mrproper not found! ==="
-          echo "Searching for mrproper in all Makefiles..."
-          grep -r "mrproper" . --include="Makefile" 2>/dev/null || echo "mrproper not found"
+          echo "Kernel Makefile not found!"
           exit 1
         fi
+        
+        echo "KERNEL_DIR=$KERNEL_DIR" >> $GITHUB_ENV
+        cd "$KERNEL_DIR"
         
         export PATH=/opt/gcc-4.7/bin:$PATH
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- mrproper
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules_prepare
         
-    - name: Download AmneziaWG source
-      run: |
-        # Same folder detection
-        if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
-          cd kernel
-        elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
-          cd kernel/e5885-kernel-3.10
+        # E5885 ke liye ARM defconfig use karein (agar available ho)
+        if [ -f arch/arm/configs/e5885_defconfig ]; then
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- e5885_defconfig
         else
-          exit 1
+          # Fallback: generic ARM defconfig, lekin yeh E5885 ke liye optimal nahi ho sakta
+          echo "e5885_defconfig not found, trying multi_v7_defconfig..."
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- multi_v7_defconfig || \
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
         fi
         
-        git clone --branch v2.0 https://github.com/amnezia-vpn/amneziawg-go.git ../amneziawg
-        ln -s ../amneziawg ./drivers/net/amneziawg
-        cd drivers/net/amneziawg
-        sed -i 's/CONFIG_ZINC_ARCH_ARM=y/CONFIG_ZINC_ARCH_ARM=n/g' Makefile 2>/dev/null || true
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules_prepare
+    
+    - name: Clone AmneziaWG kernel module (correct repo)
+      run: |
+        cd "$KERNEL_DIR"
         
+        # SAHI repository - yeh kernel module hai, Go program nahi
+        git clone https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
+        
+        # Kernel module source ko drivers/net mein link karein
+        ln -s ../amneziawg-kmod/src ./drivers/net/amneziawg
+    
     - name: Build AmneziaWG module
       run: |
-        if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
-          cd kernel
-        elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
-          cd kernel/e5885-kernel-3.10
-        else
-          exit 1
-        fi
+        cd "$KERNEL_DIR"
         
         export PATH=/opt/gcc-4.7/bin:$PATH
+        
+        # AmneziaWG ka build system src/ folder ke andar hai
+        # Hum kernel tree ke through module compile kar rahe hain
         make -C . \
           M=drivers/net/amneziawg \
           ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           CC=arm-linux-gnueabihf-gcc \
-          CONFIG_ZINC_ARCH_ARM=n \
           V=1 \
-          modules
+          modules 2>&1 | tee /tmp/build.log
+        
+        # Build log mein errors check karein (optional, lekin helpful)
+        if grep -q "Error" /tmp/build.log; then
+          echo "=== Build errors detected, see log above ==="
+        fi
     
     - name: Strip and verify module
       run: |
-        if [ -f kernel/Makefile ] && grep -q "mrproper" kernel/Makefile; then
-          cd kernel
-        elif [ -f kernel/e5885-kernel-3.10/Makefile ] && grep -q "mrproper" kernel/e5885-kernel-3.10/Makefile; then
-          cd kernel/e5885-kernel-3.10
-        else
-          exit 1
-        fi
+        cd "$KERNEL_DIR"
         
         export PATH=/opt/gcc-4.7/bin:$PATH
-        if [ -f drivers/net/amneziawg/amneziawg.ko ]; then
-          cp drivers/net/amneziawg/amneziawg.ko ./
+        
+        # Module dhundein - AmneziaWG build system alag jagah output kar sakta hai
+        MODULE_PATH=$(find . -name "amneziawg.ko" -type f 2>/dev/null | head -1)
+        
+        if [ -n "$MODULE_PATH" ]; then
+          echo "Found module at: $MODULE_PATH"
+          cp "$MODULE_PATH" ./amneziawg.ko
+          
           arm-linux-gnueabihf-strip --strip-unneeded amneziawg.ko
           
           echo "=== Module Information ==="
           file amneziawg.ko
           modinfo amneziawg.ko || true
           
-          echo "=== Vermagic ==="
-          modinfo amneziawg.ko | grep vermagic || echo "Vermagic not found"
+          echo "=== Vermagic (critical for loading) ==="
+          modinfo amneziawg.ko | grep vermagic || echo "WARNING: Vermagic not found"
         else
-          echo "Module not found! Checking build directory..."
-          find drivers -name "*.ko" -type f
+          echo "=== Module not found! Searching all .ko files ==="
+          find . -name "*.ko" -type f
+          echo "=== Build log tail ==="
+          tail -100 /tmp/build.log
           exit 1
         fi
-        
+    
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: amneziawg-e5885-linaro-gcc47
+        name: amneziawg-e5885-gcc47
         path: kernel/amneziawg.ko
+        if-no-files-found: error
