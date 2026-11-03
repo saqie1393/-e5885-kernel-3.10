@@ -173,40 +173,68 @@ jobs:
           CC=arm-linux-gnueabihf-gcc \
           V=1 \
           modules 2>&1 | tee /tmp/build.log
-          
+
     - name: Strip and Verify Module
       shell: bash
       run: |
         set -e
+        set -o pipefail
 
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
 
-        MODULE_PATH=$(find drivers/net/amneziawg \
-          -name "amneziawg.ko" -type f | head -1)
+        echo "=== Searching for amneziawg.ko (following symlinks) ==="
+
+        # -L flag symlink follow karta hai — yeh sabse important fix hai
+        MODULE_PATH=$(find -L drivers/net/amneziawg -name "amneziawg.ko" -type f 2>/dev/null | head -1)
+
+        # Fallback 1: symlink ke through seedha path
+        if [ -z "$MODULE_PATH" ] && [ -f "drivers/net/amneziawg/amneziawg.ko" ]; then
+          MODULE_PATH="drivers/net/amneziawg/amneziawg.ko"
+        fi
+
+        # Fallback 2: poore kernel tree mein dhoondo
+        if [ -z "$MODULE_PATH" ]; then
+          MODULE_PATH=$(find -L . -name "amneziawg.ko" -type f 2>/dev/null | head -1)
+        fi
+
+        # Fallback 3: realpath se symlink resolve karke dhoondo
+        if [ -z "$MODULE_PATH" ]; then
+          REAL_PATH=$(realpath drivers/net/amneziawg 2>/dev/null || true)
+          if [ -n "$REAL_PATH" ] && [ -f "$REAL_PATH/amneziawg.ko" ]; then
+            MODULE_PATH="$REAL_PATH/amneziawg.ko"
+          fi
+        fi
 
         if [ -z "$MODULE_PATH" ]; then
-          echo "AmneziaWG module not found!"
-          tail -150 /tmp/build.log
+          echo "=== ERROR: amneziawg.ko not found anywhere ==="
+          echo "=== Listing all .ko files in kernel tree ==="
+          find -L . -name "*.ko" -type f 2>/dev/null || true
+          echo "=== Last 150 lines of build log ==="
+          tail -150 /tmp/build.log || true
+          echo "=== Contents of drivers/net/amneziawg ==="
+          ls -la drivers/net/amneziawg/ 2>/dev/null || true
           exit 1
         fi
 
         echo "=== Module Found ==="
-        echo "$MODULE_PATH"
+        echo "Path: $MODULE_PATH"
+        ls -lh "$MODULE_PATH"
 
         cp "$MODULE_PATH" "$GITHUB_WORKSPACE/amneziawg.ko"
 
-        arm-linux-gnueabihf-strip \
-          --strip-unneeded \
-          "$GITHUB_WORKSPACE/amneziawg.ko"
+        arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/amneziawg.ko"
 
+        echo "=== File Type ==="
         file "$GITHUB_WORKSPACE/amneziawg.ko"
 
         echo "=== Module Vermagic ==="
-        modinfo "$GITHUB_WORKSPACE/amneziawg.ko" | grep vermagic || true
+        modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep vermagic || echo "modinfo failed (host tool mismatch), skipping"
 
         echo "=== Module Size ==="
         ls -lh "$GITHUB_WORKSPACE/amneziawg.ko"
+
+        echo "=== SUCCESS: amneziawg.ko is ready ==="
 
     - name: Upload AmneziaWG Module
       uses: actions/upload-artifact@v4
@@ -222,5 +250,3 @@ jobs:
         name: E5885-AmneziaWG-Build-Log
         path: /tmp/build.log
         if-no-files-found: ignore
-
-
