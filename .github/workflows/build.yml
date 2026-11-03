@@ -84,6 +84,7 @@ jobs:
         make ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
+          LOCALVERSION= \
           hi6932_E5885Ls-93a_defconfig
 
         echo "=== Kernel Prepare ==="
@@ -91,11 +92,13 @@ jobs:
         make ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
+          LOCALVERSION= \
           prepare
 
         make ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
+          LOCALVERSION= \
           modules_prepare
 
         test -f include/generated/autoconf.h
@@ -122,8 +125,8 @@ jobs:
         echo "=== AmneziaWG Version ==="
         git -C ../amneziawg-kmod describe --tags
 
-        echo "=== Module Makefile ==="
-        ls -l drivers/net/amneziawg/Makefile
+        echo "=== Module Kbuild ==="
+        ls -l drivers/net/amneziawg/Kbuild
 
     - name: Fix ARM CPUID compatibility
       shell: bash
@@ -150,19 +153,45 @@ jobs:
         EOF
 
         tail -n 8 "$COMPAT"
-    
-    - name: Fix ip_tunnel_get_stats64 for E5885 kernel
+
+    - name: Copy ip_tunnel files and update Kbuild
       shell: bash
       run: |
         set -e
-        DEVICE_C="$KERNEL_DIR/drivers/net/amneziawg/device.c"
+        cd "$KERNEL_DIR"
+        AWG_SRC="drivers/net/amneziawg"
+        CUSTOM_DIR="kernel/drivers/net/ip_tunnel"
 
-        # ip_tunnel_get_stats64 ko dev_get_stats se replace karein
-        sed -i 's/ip_tunnel_get_stats64/dev_get_stats/g' "$DEVICE_C"
+        echo "=== Checking custom ip_tunnel folder ==="
+        ls -la "$CUSTOM_DIR" || echo "Custom folder not found!"
 
-        echo "=== Verification: check if replacement worked ==="
-        grep -n "dev_get_stats" "$DEVICE_C" || true
-    
+        # 1. Copy ip_tunnel.c and ip_tunnels.h
+        if [ -f "$CUSTOM_DIR/ip_tunnel.c" ]; then
+          cp "$CUSTOM_DIR/ip_tunnel.c" "$AWG_SRC/ip_tunnel.c"
+          echo "Copied ip_tunnel.c"
+        else
+          echo "ERROR: ip_tunnel.c not found!"
+          exit 1
+        fi
+
+        if [ -f "$CUSTOM_DIR/ip_tunnels.h" ]; then
+          cp "$CUSTOM_DIR/ip_tunnels.h" "$AWG_SRC/ip_tunnels.h"
+          echo "Copied ip_tunnels.h"
+        else
+          echo "ERROR: ip_tunnels.h not found!"
+          exit 1
+        fi
+
+        # 2. Remove EXPORT_SYMBOL_GPL so it doesn't conflict with kernel
+        sed -i '/EXPORT_SYMBOL_GPL/d' "$AWG_SRC/ip_tunnel.c" || true
+
+        # 3. Update Kbuild to add ip_tunnel.o
+        echo "=== Updating AmneziaWG Kbuild ==="
+        sed -i 's|^amneziawg-y := \(.*\)|amneziawg-y := \1 ip_tunnel.o|' "$AWG_SRC/Kbuild"
+        
+        # Verify Kbuild
+        grep "^amneziawg-y" "$AWG_SRC/Kbuild"
+
     - name: Build AmneziaWG
       shell: bash
       run: |
@@ -182,6 +211,7 @@ jobs:
           ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
+          LOCALVERSION= \
           CC=arm-linux-gnueabihf-gcc \
           V=1 \
           modules 2>&1 | tee /tmp/build.log
@@ -197,20 +227,16 @@ jobs:
 
         echo "=== Searching for amneziawg.ko (following symlinks) ==="
 
-        # -L flag symlink follow karta hai — yeh sabse important fix hai
         MODULE_PATH=$(find -L drivers/net/amneziawg -name "amneziawg.ko" -type f 2>/dev/null | head -1)
 
-        # Fallback 1: symlink ke through seedha path
         if [ -z "$MODULE_PATH" ] && [ -f "drivers/net/amneziawg/amneziawg.ko" ]; then
           MODULE_PATH="drivers/net/amneziawg/amneziawg.ko"
         fi
 
-        # Fallback 2: poore kernel tree mein dhoondo
         if [ -z "$MODULE_PATH" ]; then
           MODULE_PATH=$(find -L . -name "amneziawg.ko" -type f 2>/dev/null | head -1)
         fi
 
-        # Fallback 3: realpath se symlink resolve karke dhoondo
         if [ -z "$MODULE_PATH" ]; then
           REAL_PATH=$(realpath drivers/net/amneziawg 2>/dev/null || true)
           if [ -n "$REAL_PATH" ] && [ -f "$REAL_PATH/amneziawg.ko" ]; then
