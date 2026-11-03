@@ -132,11 +132,9 @@ jobs:
         set -e
         COMPAT="$KERNEL_DIR/drivers/net/amneziawg/compat/compat.h"
 
-        sed -i \
-          's/#define read_cpuid_part() read_cpuid_part_number()/#define read_cpuid_part(x) read_cpuid_part_number()/' \
-          "$COMPAT"
+        sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$COMPAT"
 
-        grep -n "read_cpuid_part" "$COMPAT"
+        grep -n "read_cpuid_part" "$COMPAT" || true
     
     - name: Build AmneziaWG
       shell: bash
