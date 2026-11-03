@@ -64,7 +64,34 @@ jobs:
         git clone --branch v1.0.20251104 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
         rm -rf drivers/net/amneziawg
         ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
+    
+    - name: Build amneziawg-tools (static ARMv7)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        TOOLS_DIR="amneziawg-tools-src"
 
+        echo "=== Cloning amneziawg-tools v1.0.20260223 ==="
+        git clone --branch v1.0.20260223 --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git "../$TOOLS_DIR"
+        cd "../$TOOLS_DIR/src"
+
+        echo "=== Building awg and awg-quick statically for ARMv7 ==="
+        # Static linking zaroori hai taaki BusyBox environment mein chale
+        make CC=arm-linux-gnueabihf-gcc \
+             CFLAGS="-static -O2 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16" \
+             LDFLAGS="-static" \
+             WITH_WGQUICK=yes \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/awg-tools-out"
+
+        echo "=== Verifying binaries ==="
+        file "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
+        # awg-quick bash script hai, binary nahi
+        ls -la "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/" || true
+    
     - name: Apply compatibility patches (repo patch file)
       shell: bash
       run: |
