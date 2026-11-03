@@ -285,17 +285,11 @@ jobs:
           - `amneziawg.ko` — Kernel module (vermagic 3.10.100+ ARMv7)
           - `awg-tools-armv7.tar.gz` — Static `awg` binary for ARMv7
 
-          **Note:** `awg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only). Configure the interface manually with `ip` commands.
+          **Note:** `awg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only).
 
           **Install:**
           ```sh
-          # Kernel module
           insmod /system/modules/amneziawg.ko
-
-          # awg binary
           tar -xzf awg-tools-armv7.tar.gz -C /usr/bin/
           chmod +x /usr/bin/awg
-
-          # Verify
           awg --version
-          awg show
