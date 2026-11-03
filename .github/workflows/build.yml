@@ -150,7 +150,19 @@ jobs:
         EOF
 
         tail -n 8 "$COMPAT"
+    
+    - name: Fix ip_tunnel_get_stats64 for E5885 kernel
+      shell: bash
+      run: |
+        set -e
+        DEVICE_C="$KERNEL_DIR/drivers/net/amneziawg/device.c"
 
+        # ip_tunnel_get_stats64 ko dev_get_stats se replace karein
+        sed -i 's/ip_tunnel_get_stats64/dev_get_stats/g' "$DEVICE_C"
+
+        echo "=== Verification: check if replacement worked ==="
+        grep -n "dev_get_stats" "$DEVICE_C" || true
+    
     - name: Build AmneziaWG
       shell: bash
       run: |
