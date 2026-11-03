@@ -86,17 +86,14 @@ jobs:
         echo "=== 5. Fix lspush/lspull ==="
         echo -e "\n#ifdef lspush\n#undef lspush\n#endif\n#ifdef lspull\n#undef lspull\n#endif" >> "$AWG_SRC/compat/compat-asm.h"
         
-        echo "=== 7. Fix blake2s selftest ==="
+        echo "=== 6. Fix blake2s selftest ==="
         BLAKE2S_SELFTEST="$AWG_SRC/crypto/zinc/selftest/blake2s.c"
         if [ -f "$BLAKE2S_SELFTEST" ]; then
           sed -i '1s/^/#ifdef blake2s\n#undef blake2s\n#endif\n/' "$BLAKE2S_SELFTEST"
           echo "blake2s selftest patched"
         else
-          echo "WARNING: blake2s.c not found at expected path, skipping"
+          echo "WARNING: blake2s.c not found, skipping"
         fi
-        
-        echo "=== 7. Fix ip6_dst_lookup_flow ==="
-        echo -e "\n/* Kernel 3.10 compat */\n#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0)\nstatic inline struct dst_entry *__compat_ip6_dst_lookup_flow(struct net *net, struct sock *sk, struct flowi6 *fl6, const struct in6_addr *final_dst)\n{\n    return ip6_dst_lookup_flow(sk, fl6, final_dst);\n}\n#define ip6_dst_lookup_flow __compat_ip6_dst_lookup_flow\n#endif" >> "$AWG_SRC/compat/compat.h"
         
         echo "=== All fixes applied ==="
 
