@@ -94,25 +94,37 @@ jobs:
         echo "=== 4. Fix dev_get_tstats64 ==="
         sed -i 's|#define dev_get_tstats64 ip_tunnel_get_stats64|#define dev_get_tstats64 dev_get_stats|g' "$AWG_SRC/compat/compat.h"
 
-        echo "=== 5. Fix lspush/lspull (silence redefinition) ==="
-        # AmneziaWG ka compat-asm.h khud lspush/lspull ko #undef + #define karta hai,
-        # lekin arch/arm/include/asm/assembler.h pehle hi inhe define kar chuka hota hai.
-        # Isliye preamble me "#ifdef -> #undef" lagane se redefinition warning aati hai.
-        # Sahi solution: hamari prepended lines me sidha #ifndef ke andar wrap karo,
-        # ya unhe hata kar AmneziaWG ke apne #undef par bharosa karo.
-        # Yahan hum preamble ko clean karke sirf tab undef karte hain jab already defined ho.
+        echo "=== 5. Fix lspush/lspull (guard redefines in-place) ==="
         COMPAT_ASM="$AWG_SRC/compat/compat-asm.h"
-        # Remove any previously prepended preamble (idempotent re-runs)
+        echo "--- compat-asm.h before (lines 40-60) ---"
+        sed -n '40,60p' "$COMPAT_ASM" || true
+
+        # 1. Purana prepended preamble hatao (idempotent re-runs ke liye)
         sed -i '/^#ifdef lspush$/,/^#endif$/d; /^#ifdef lspull$/,/^#endif$/d' "$COMPAT_ASM"
-        # Prepend a guarded version that only undefs if defined (no redefinition warning)
-        printf '%s\n' \
-          '#ifdef lspush' \
-          '#undef lspush' \
-          '#endif' \
-          '#ifdef lspull' \
-          '#undef lspull' \
-          '#endif' | cat - "$COMPAT_ASM" > /tmp/compat-asm.tmp
-        mv /tmp/compat-asm.tmp "$COMPAT_ASM"
+
+        # 2. In-file redefines ko guard karo (#ifndef ... #endif)
+        #    Note: '#' ko sed mein literal rakhne ke liye already safe hai
+        sed -i 's|^#define[[:space:]]\+lspush\>|#ifndef lspush\n#define lspush|' "$COMPAT_ASM"
+        sed -i 's|^#define[[:space:]]\+lspull\>|#ifndef lspull\n#define lspull|' "$COMPAT_ASM"
+
+        # 3. Har naye "#define lspush/lspull" ke baad "#endif" insert karo
+        #    (sirf un lines ke baad jo humne abhi wrap ki hain, i.e. jinme #ifndef precedes)
+        awk '
+          BEGIN { prev=""; }
+          {
+            if (prev ~ /^#ifndef lspush$/ && $0 ~ /^#define lspush/) {
+              print $0; print "#endif"; prev=$0; next
+            }
+            if (prev ~ /^#ifndef lspull$/ && $0 ~ /^#define lspull/) {
+              print $0; print "#endif"; prev=$0; next
+            }
+            print $0; prev=$0
+          }
+        ' "$COMPAT_ASM" > /tmp/compat-asm.tmp && mv /tmp/compat-asm.tmp "$COMPAT_ASM"
+
+        echo "--- compat-asm.h after (lines 40-60) ---"
+        sed -n '40,60p' "$COMPAT_ASM" || true
+        echo "compat-asm.h redefines guarded"
 
         echo "=== 6. Fix blake2s selftest ==="
         BLAKE2S_SELFTEST="$AWG_SRC/crypto/zinc/selftest/blake2s.c"
