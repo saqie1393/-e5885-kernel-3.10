@@ -126,6 +126,7 @@ jobs:
         echo "=== Module Makefile ==="
         ls -l drivers/net/amneziawg/Makefile
      
+   
     - name: Fix ARM CPUID compatibility
       shell: bash
       run: |
@@ -135,7 +136,23 @@ jobs:
         sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$COMPAT"
 
         grep -n "read_cpuid_part" "$COMPAT" || true
-    
+
+    - name: Fix fallthrough for Linux 3.10
+      shell: bash
+      run: |
+        set -e
+        COMPAT="$KERNEL_DIR/drivers/net/amneziawg/compat/compat.h"
+
+        cat >> "$COMPAT" <<'EOF'
+
+        /* Linux 3.10 compatibility */
+        #ifndef fallthrough
+        #define fallthrough /* fall through */
+        #endif
+        EOF
+
+        tail -n 8 "$COMPAT"
+
     - name: Build AmneziaWG
       shell: bash
       run: |
@@ -158,6 +175,7 @@ jobs:
           CC=arm-linux-gnueabihf-gcc \
           V=1 \
           modules 2>&1 | tee /tmp/build.log
+
 
     - name: Strip and Verify Module
       shell: bash
