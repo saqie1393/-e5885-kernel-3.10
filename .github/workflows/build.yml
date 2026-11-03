@@ -1,13 +1,18 @@
-name: Build AmneziaWG v1.0.20260725 - E5885
+name: Build and Release AmneziaWG for E5885
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout E5885 Kernel
@@ -31,23 +36,13 @@ jobs:
       shell: bash
       run: |
         set -e
-
         echo "=== GCC Archive ==="
         ls -lh gcc/
-
-        tar -xjf \
-          gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 \
-          -C /opt/
-
-        sudo mv \
-          /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux \
-          /opt/gcc-4.7
-
+        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
         echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
         echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
-
         export PATH=/opt/gcc-4.7/bin:$PATH
-
         arm-linux-gnueabihf-gcc --version
         arm-linux-gnueabihf-strip --version
 
@@ -55,7 +50,6 @@ jobs:
       shell: bash
       run: |
         set -e
-
         if [ -f Makefile ] && grep -q "mrproper" Makefile; then
           KERNEL_DIR="."
         elif [ -f kernel/Makefile ]; then
@@ -67,9 +61,7 @@ jobs:
           ls -la
           exit 1
         fi
-
         echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
-
         echo "=== Kernel Directory ==="
         echo "$KERNEL_DIR"
 
@@ -77,31 +69,12 @@ jobs:
       shell: bash
       run: |
         set -e
-
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-
-        # Yahan LOCALVERSION=+ set kiya hai taake '+' wapas aa jaye
-        make ARCH=arm \
-          CROSS_COMPILE=arm-linux-gnueabihf- \
-          HOSTCFLAGS=-fcommon \
-          LOCALVERSION=+ \
-          hi6932_E5885Ls-93a_defconfig
-
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5885Ls-93a_defconfig
         echo "=== Kernel Prepare ==="
-
-        make ARCH=arm \
-          CROSS_COMPILE=arm-linux-gnueabihf- \
-          HOSTCFLAGS=-fcommon \
-          LOCALVERSION=+ \
-          prepare
-
-        make ARCH=arm \
-          CROSS_COMPILE=arm-linux-gnueabihf- \
-          HOSTCFLAGS=-fcommon \
-          LOCALVERSION=+ \
-          modules_prepare
-
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
         test -f include/generated/autoconf.h
         test -f include/config/auto.conf
 
@@ -109,23 +82,12 @@ jobs:
       shell: bash
       run: |
         set -e
-
         cd "$KERNEL_DIR"
-
-        git clone \
-          --branch v1.0.20260725 \
-          --depth 1 \
-          https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git \
-          ../amneziawg-kmod
-
+        git clone --branch v1.0.20260725 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
         rm -rf drivers/net/amneziawg
-
-        ln -s "$(realpath ../amneziawg-kmod/src)" \
-          drivers/net/amneziawg
-
+        ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
         echo "=== AmneziaWG Version ==="
         git -C ../amneziawg-kmod describe --tags
-
         echo "=== Module Kbuild ==="
         ls -l drivers/net/amneziawg/Kbuild
 
@@ -134,9 +96,7 @@ jobs:
       run: |
         set -e
         COMPAT="$KERNEL_DIR/drivers/net/amneziawg/compat/compat.h"
-
         sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$COMPAT"
-
         grep -n "read_cpuid_part" "$COMPAT" || true
 
     - name: Fix fallthrough for Linux 3.10
@@ -144,7 +104,6 @@ jobs:
       run: |
         set -e
         COMPAT="$KERNEL_DIR/drivers/net/amneziawg/compat/compat.h"
-
         cat >> "$COMPAT" <<'EOF'
 
         /* Linux 3.10 compatibility */
@@ -152,7 +111,6 @@ jobs:
         #define fallthrough /* fall through */
         #endif
         EOF
-
         tail -n 8 "$COMPAT"
 
     - name: Copy ip_tunnel files and update Kbuild
@@ -162,11 +120,8 @@ jobs:
         cd "$KERNEL_DIR"
         AWG_SRC="drivers/net/amneziawg"
         CUSTOM_DIR="kernel/drivers/net/ip_tunnel"
-
         echo "=== Checking custom ip_tunnel folder ==="
         ls -la "$CUSTOM_DIR" || echo "Custom folder not found!"
-
-        # 1. Copy ip_tunnel.c and ip_tunnels.h
         if [ -f "$CUSTOM_DIR/ip_tunnel.c" ]; then
           cp "$CUSTOM_DIR/ip_tunnel.c" "$AWG_SRC/ip_tunnel.c"
           echo "Copied ip_tunnel.c"
@@ -174,7 +129,6 @@ jobs:
           echo "ERROR: ip_tunnel.c not found!"
           exit 1
         fi
-
         if [ -f "$CUSTOM_DIR/ip_tunnels.h" ]; then
           cp "$CUSTOM_DIR/ip_tunnels.h" "$AWG_SRC/ip_tunnels.h"
           echo "Copied ip_tunnels.h"
@@ -182,15 +136,9 @@ jobs:
           echo "ERROR: ip_tunnels.h not found!"
           exit 1
         fi
-
-        # 2. Remove EXPORT_SYMBOL_GPL so it doesn't conflict with kernel
         sed -i '/EXPORT_SYMBOL_GPL/d' "$AWG_SRC/ip_tunnel.c" || true
-
-        # 3. Update Kbuild to add ip_tunnel.o
         echo "=== Updating AmneziaWG Kbuild ==="
         sed -i 's|^amneziawg-y := \(.*\)|amneziawg-y := \1 ip_tunnel.o|' "$AWG_SRC/Kbuild"
-        
-        # Verify Kbuild
         grep "^amneziawg-y" "$AWG_SRC/Kbuild"
 
     - name: Build AmneziaWG
@@ -198,95 +146,71 @@ jobs:
       run: |
         set -e
         set -o pipefail
-
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-
         echo "=== GCC ==="
         arm-linux-gnueabihf-gcc --version
-
         echo "=== Building AmneziaWG ==="
-
-        # Yahan bhi LOCALVERSION=+ set kiya hai
-        make -C . \
-          M=drivers/net/amneziawg \
-          ARCH=arm \
-          CROSS_COMPILE=arm-linux-gnueabihf- \
-          HOSTCFLAGS=-fcommon \
-          LOCALVERSION=+ \
-          CC=arm-linux-gnueabihf-gcc \
-          V=1 \
-          modules 2>&1 | tee /tmp/build.log
+        make -C . M=drivers/net/amneziawg ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc V=1 modules 2>&1 | tee /tmp/build.log
 
     - name: Strip and Verify Module
       shell: bash
       run: |
         set -e
         set -o pipefail
-
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-
         echo "=== Searching for amneziawg.ko (following symlinks) ==="
-
         MODULE_PATH=$(find -L drivers/net/amneziawg -name "amneziawg.ko" -type f 2>/dev/null | head -1)
-
         if [ -z "$MODULE_PATH" ] && [ -f "drivers/net/amneziawg/amneziawg.ko" ]; then
           MODULE_PATH="drivers/net/amneziawg/amneziawg.ko"
         fi
-
         if [ -z "$MODULE_PATH" ]; then
           MODULE_PATH=$(find -L . -name "amneziawg.ko" -type f 2>/dev/null | head -1)
         fi
-
         if [ -z "$MODULE_PATH" ]; then
           REAL_PATH=$(realpath drivers/net/amneziawg 2>/dev/null || true)
           if [ -n "$REAL_PATH" ] && [ -f "$REAL_PATH/amneziawg.ko" ]; then
             MODULE_PATH="$REAL_PATH/amneziawg.ko"
           fi
         fi
-
         if [ -z "$MODULE_PATH" ]; then
           echo "=== ERROR: amneziawg.ko not found anywhere ==="
-          echo "=== Listing all .ko files in kernel tree ==="
           find -L . -name "*.ko" -type f 2>/dev/null || true
-          echo "=== Last 150 lines of build log ==="
           tail -150 /tmp/build.log || true
-          echo "=== Contents of drivers/net/amneziawg ==="
           ls -la drivers/net/amneziawg/ 2>/dev/null || true
           exit 1
         fi
-
         echo "=== Module Found ==="
         echo "Path: $MODULE_PATH"
         ls -lh "$MODULE_PATH"
-
         cp "$MODULE_PATH" "$GITHUB_WORKSPACE/amneziawg.ko"
-
         arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/amneziawg.ko"
-
         echo "=== File Type ==="
         file "$GITHUB_WORKSPACE/amneziawg.ko"
-
         echo "=== Module Vermagic ==="
         modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep vermagic || echo "modinfo failed (host tool mismatch), skipping"
-
         echo "=== Module Size ==="
         ls -lh "$GITHUB_WORKSPACE/amneziawg.ko"
-
         echo "=== SUCCESS: amneziawg.ko is ready ==="
 
-    - name: Upload AmneziaWG Module
+    - name: Upload Artifact (Temporary)
       uses: actions/upload-artifact@v4
       with:
-        name: amneziawg-E5885-v1.0.20260725
+        name: amneziawg-E5885-${{ github.event.inputs.version }}
         path: amneziawg.ko
         if-no-files-found: error
 
-    - name: Upload Build Log on Failure
-      if: failure()
-      uses: actions/upload-artifact@v4
+    - name: Create GitHub Release and Upload Asset
+      uses: softprops/action-gh-release@v2
       with:
-        name: E5885-AmneziaWG-Build-Log
-        path: /tmp/build.log
-        if-no-files-found: ignore
+        tag_name: ${{ github.event.inputs.version }}
+        name: AmneziaWG E5885 ${{ github.event.inputs.version }}
+        body: |
+          Automated build of AmneziaWG Kernel Module for Huawei E5885 (Kernel 3.10.100+).
+          
+          **Version:** ${{ github.event.inputs.version }}
+          **Module:** amneziawg.ko
+        files: amneziawg.ko
+        draft: false
+        prerelease: false
