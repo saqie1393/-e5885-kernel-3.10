@@ -186,7 +186,7 @@ jobs:
         echo "=== Checking for wireguard.h ==="
         find . -name "wireguard.h" -type f 2>/dev/null || echo "wireguard.h NOT FOUND"
 
-        # Fix double linux/linux path — symlink bana dein
+        # Fix double linux/linux path
         if [ -f uapi/linux/linux/wireguard.h ] && [ ! -f uapi/linux/wireguard.h ]; then
           ln -s linux/wireguard.h uapi/linux/wireguard.h
           echo "Created symlink: uapi/linux/wireguard.h -> linux/wireguard.h"
@@ -207,27 +207,20 @@ jobs:
              DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
              2>&1 | tee /tmp/tools-build.log
 
+        echo "=== Installing awg to output directory ==="
+        make install \
+             CC="$CC" \
+             LDFLAGS="$LDFLAGS" \
+             RUNSTATEDIR=/var/run \
+             WITH_WGQUICK=yes \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
+             2>&1 | tee -a /tmp/tools-build.log
+
         echo "=== Verifying binaries ==="
         find "$GITHUB_WORKSPACE/awg-tools-out" -type f -exec file {} \; || true
-    
-    - name: Show Tools Build Log Summary
-      if: always()
-      shell: bash
-      run: |
-        echo "=== Tools build warnings/errors ==="
-        grep -iE "warning|error" /tmp/tools-build.log || echo "No warnings or errors found"
-
-    - name: Package awg tools
-      if: success()
-      shell: bash
-      run: |
-        cd "$GITHUB_WORKSPACE"
-        mkdir -p awg-tools-release
-        cp awg-tools-out/usr/bin/awg awg-tools-release/ 2>/dev/null || echo "awg not found"
-        cp awg-tools-out/usr/bin/awg-quick awg-tools-release/ 2>/dev/null || echo "awg-quick not found"
-        chmod +x awg-tools-release/* 2>/dev/null || true
-        tar -czf awg-tools-armv7.tar.gz -C awg-tools-release .
-        ls -la awg-tools-armv7.tar.gz
 
     - name: Upload Kernel Module Artifact
       if: success()
