@@ -86,8 +86,7 @@ jobs:
         # 5. Fix lspush/lspull
         echo -e "\n#ifdef lspush\n#undef lspush\n#endif\n#ifdef lspull\n#undef lspull\n#endif" >> "$AWG_SRC/compat/compat-asm.h"
         
-        # 6. Fix blake2s
-        sed -i '1s/^/#ifdef blake2s\n#undef blake2s\n#endif\n/' "$AWG_SRC/crypto/zinc/blake2s/selftest/blake2s.c"
+        # 6. blake2s warning ko ignore karo (harmless hai, koi fix nahi chahiye)
 
     - name: Copy ip_tunnel files and update Kbuild
       shell: bash
