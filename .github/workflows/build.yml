@@ -81,10 +81,11 @@ jobs:
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
 
+        # Yahan LOCALVERSION=+ set kiya hai taake '+' wapas aa jaye
         make ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
-          LOCALVERSION= \
+          LOCALVERSION=+ \
           hi6932_E5885Ls-93a_defconfig
 
         echo "=== Kernel Prepare ==="
@@ -92,13 +93,13 @@ jobs:
         make ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
-          LOCALVERSION= \
+          LOCALVERSION=+ \
           prepare
 
         make ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
-          LOCALVERSION= \
+          LOCALVERSION=+ \
           modules_prepare
 
         test -f include/generated/autoconf.h
@@ -206,12 +207,13 @@ jobs:
 
         echo "=== Building AmneziaWG ==="
 
+        # Yahan bhi LOCALVERSION=+ set kiya hai
         make -C . \
           M=drivers/net/amneziawg \
           ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           HOSTCFLAGS=-fcommon \
-          LOCALVERSION= \
+          LOCALVERSION=+ \
           CC=arm-linux-gnueabihf-gcc \
           V=1 \
           modules 2>&1 | tee /tmp/build.log
