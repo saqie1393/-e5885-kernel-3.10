@@ -187,8 +187,8 @@ jobs:
         find . -name "wireguard.h" -type f 2>/dev/null || echo "wireguard.h NOT FOUND"
 
         echo "=== Building awg statically for ARMv7 ==="
-        make CC=arm-linux-gnueabihf-gcc \
-             CFLAGS="-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16 -I. -Iuapi" \
+             make CC=arm-linux-gnueabihf-gcc \
+             CFLAGS="-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16 -I. -Iuapi/linux" \
              LDFLAGS="-static" \
              WITH_WGQUICK=yes \
              WITH_BASHCOMPLETION=no \
