@@ -126,19 +126,18 @@ jobs:
         echo "=== Module Makefile ==="
         ls -l drivers/net/amneziawg/Makefile
      
-    - name: Disable incompatible ARM ChaCha optimization
+    - name: Fix ARM CPUID compatibility
       shell: bash
       run: |
         set -e
-
-        cd "$KERNEL_DIR/drivers/net/amneziawg"
+        COMPAT="$KERNEL_DIR/drivers/net/amneziawg/compat/compat.h"
 
         sed -i \
-          's/chacha20-arm-glue.o//' \
-          crypto/zinc/chacha20/Makefile
+          's/#define read_cpuid_part() read_cpuid_part_number()/#define read_cpuid_part(x) read_cpuid_part_number()/' \
+          "$COMPAT"
 
-        echo "=== Updated ChaCha Makefile ==="
-        cat crypto/zinc/chacha20/Makefile
+        grep -n "read_cpuid_part" "$COMPAT"
+    
     - name: Build AmneziaWG
       shell: bash
       run: |
