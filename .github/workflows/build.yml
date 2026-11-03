@@ -188,8 +188,9 @@ jobs:
 
         echo "=== Building awg statically for ARMv7 ==="
              make CC=arm-linux-gnueabihf-gcc \
-             CFLAGS="-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16 -I. -Iuapi/linux -DRUNSTATEDIR=\"/var/run\"" \
+             CFLAGS="-static -O2 -std=gnu99 -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16 -I. -Iuapi/linux" \
              LDFLAGS="-static" \
+             RUNSTATEDIR="/var/run" \
              WITH_WGQUICK=yes \
              WITH_BASHCOMPLETION=no \
              WITH_SYSTEMDUNITS=no \
