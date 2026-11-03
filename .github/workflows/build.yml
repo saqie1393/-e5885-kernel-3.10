@@ -65,6 +65,17 @@ jobs:
         rm -rf drivers/net/amneziawg
         ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
 
+    - name: Check ip6_dst_lookup_flow signature
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        echo "--- Declaration in include/net/ipv6.h ---"
+        grep -rn "ip6_dst_lookup_flow" include/net/ipv6.h || echo "NOT FOUND in ipv6.h"
+        echo "--- Declaration anywhere in include/ ---"
+        grep -rn "ip6_dst_lookup_flow" include/ || echo "NOT FOUND anywhere in include/"
+        echo "--- Definition in net/ipv6/ ---"
+        grep -rn "ip6_dst_lookup_flow" net/ipv6/ || echo "NOT FOUND in net/ipv6/"
+
     - name: Apply compatibility and warning fixes
       shell: bash
       run: |
@@ -96,16 +107,16 @@ jobs:
           echo "WARNING: blake2s.c not found, skipping"
         fi
 
-        echo "=== 7. Fix ip6_dst_lookup_flow (recursion-free wrapper) ==="
+        echo "=== 7. Fix ip6_dst_lookup_flow (recursion-free wrapper, 4-arg) ==="
         printf '%s\n' \
           '' \
-          '/* Kernel 3.10 compat: ip6_dst_lookup_flow(sk, fl6, final_dst) */' \
+          '/* Kernel 3.10 compat: ip6_dst_lookup_flow(net, sk, fl6, final_dst) */' \
           '#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0) && !defined(ISRHEL7)' \
           'static inline struct dst_entry *__compat_ip6_dst_lookup_flow(' \
           '    struct net *net, struct sock *sk, struct flowi6 *fl6,' \
           '    const struct in6_addr *final_dst)' \
           '{' \
-          '    return ip6_dst_lookup_flow(sk, fl6, final_dst);' \
+          '    return ip6_dst_lookup_flow(net, sk, fl6, final_dst);' \
           '}' \
           '#define ip6_dst_lookup_flow __compat_ip6_dst_lookup_flow' \
           '#endif' >> "$AWG_SRC/compat/compat.h"
