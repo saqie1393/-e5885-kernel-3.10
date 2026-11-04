@@ -22,7 +22,7 @@ jobs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget xz-utils
 
     - name: Extract Linaro GCC 4.7
       shell: bash
@@ -172,7 +172,6 @@ jobs:
         file "$GITHUB_WORKSPACE/amneziawg.ko"
         modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep vermagic || true
 
-    # ===================== AWG TOOL (musl) =====================
     - name: Clone and Build awg tool v1.0.20260223 (static ARMv7, musl)
       shell: bash
       run: |
@@ -184,6 +183,7 @@ jobs:
         tar -xJf /tmp/musl-cross.tar.xz -C /opt/
         export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
         armv7l-linux-musleabihf-gcc --version
+
         echo "=== Cloning amneziawg-tools v1.0.20260223 ==="
         git clone --branch v1.0.20260223 --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git "../$TOOLS_DIR"
         cd "../$TOOLS_DIR/src"
@@ -197,7 +197,7 @@ jobs:
         fi
 
         echo "=== Building awg statically for ARMv7 (musl) ==="
-        export CC=arm-linux-musleabihf-gcc
+        export CC=armv7l-linux-musleabihf-gcc
         export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
         export LDFLAGS="-static -s"
 
@@ -253,7 +253,6 @@ jobs:
         echo "=== Tools build warnings/errors ==="
         grep -iE "warning|error" /tmp/tools-build.log || echo "No warnings or errors found"
 
-    # ===================== ZIP / TAR =====================
     - name: Package awg tool (awg only) into tar.gz
       if: success()
       shell: bash
