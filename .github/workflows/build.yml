@@ -299,12 +299,26 @@ jobs:
           /tmp/tools-build.log
         if-no-files-found: warn
 
+    # ================= RELEASE FIX =================
+    - name: Create Tag (Release ke liye zaroori)
+      if: success()
+      shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -f ${{ github.event.inputs.version }}
+        git push origin -f ${{ github.event.inputs.version }}
+
     - name: Create Release
       if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
         name: AmneziaWG E5885 ${{ github.event.inputs.version }}
+        overwrite: true
+        files: |
+          amneziawg.ko
+          awg-tools-armv7.tar.gz
         body: |
           AmneziaWG for Huawei E5885 (kernel 3.10)
 
