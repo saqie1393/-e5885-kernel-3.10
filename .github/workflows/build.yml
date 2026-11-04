@@ -198,8 +198,8 @@ jobs:
 
         echo "=== Building awg statically for ARMv7 (musl) ==="
         export CC=armv7l-linux-musleabihf-gcc
-        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
-        export LDFLAGS="-static -s"
+        export CFLAGS="-Os -flto -ffunction-sections -fdata-sections -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
+        export LDFLAGS="-static -s -Wl,--gc-sections"
 
         make CC="$CC" \
              LDFLAGS="$LDFLAGS" \
