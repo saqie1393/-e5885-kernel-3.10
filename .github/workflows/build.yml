@@ -22,7 +22,7 @@ jobs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch gcc-arm-linux-gnueabihf
 
     - name: Extract Linaro GCC 4.7
       shell: bash
@@ -172,11 +172,13 @@ jobs:
         file "$GITHUB_WORKSPACE/amneziawg.ko"
         modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep vermagic || true
 
-    - name: Clone and Build awg tool v1.0.20260223 (static ARMv7)
+    # ===================== YAHAN BADLAV KIYA GAYA HAI =====================
+    - name: Clone and Build awg tool v1.0.20260223 (static ARMv7, Ubuntu gcc)
       shell: bash
       run: |
-        export PATH=/opt/gcc-4.7/bin:$PATH
-        cd "$KERNEL_DIR"
+        # NOTE: Kernel module ke liye Linaro 4.7 alag rakha gaya hai.
+        # awg tool ko Ubuntu 22.04 ke modern gcc-arm-linux-gnueabihf se build kar rahe hain
+        # taake static size chhota (approx 120 KB) aaye.
         TOOLS_DIR="amneziawg-tools-src"
 
         echo "=== Cloning amneziawg-tools v1.0.20260223 ==="
@@ -192,7 +194,8 @@ jobs:
           echo "Created symlink: uapi/linux/wireguard.h -> linux/wireguard.h"
         fi
 
-        echo "=== Building awg statically for ARMv7 ==="
+        echo "=== Building awg statically for ARMv7 (Ubuntu gcc) ==="
+        # Ubuntu ka cross gcc use karein, Linaro 4.7 nahi
         export CC=arm-linux-gnueabihf-gcc
         export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
         export LDFLAGS="-static -s"
@@ -221,6 +224,8 @@ jobs:
 
         echo "=== Verifying awg binary ==="
         file "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
+        ls -la "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
+    # ======================================================================
 
     - name: Show Tools Build Log Summary
       if: always()
