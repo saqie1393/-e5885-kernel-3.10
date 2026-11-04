@@ -22,7 +22,7 @@ jobs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch gcc-arm-linux-gnueabihf
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget
 
     - name: Extract Linaro GCC 4.7
       shell: bash
@@ -172,14 +172,18 @@ jobs:
         file "$GITHUB_WORKSPACE/amneziawg.ko"
         modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep vermagic || true
 
-    # ===================== YAHAN BADLAV KIYA GAYA HAI =====================
-    - name: Clone and Build awg tool v1.0.20260223 (static ARMv7, Ubuntu gcc)
+    # ===================== AWG TOOL (musl) =====================
+    - name: Clone and Build awg tool v1.0.20260223 (static ARMv7, musl)
       shell: bash
       run: |
-        # NOTE: Kernel module ke liye Linaro 4.7 alag rakha gaya hai.
-        # awg tool ko Ubuntu 22.04 ke modern gcc-arm-linux-gnueabihf se build kar rahe hain
-        # taake static size chhota (approx 120 KB) aaye.
         TOOLS_DIR="amneziawg-tools-src"
+
+        echo "=== Downloading musl-cross-make ARM toolchain ==="
+        MUSL_URL="https://musl.cc/arm-linux-musleabihf-cross.tgz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tgz
+        tar -xzf /tmp/musl-cross.tgz -C /opt/
+        export PATH="/opt/arm-linux-musleabihf-cross/bin:$PATH"
+        arm-linux-musleabihf-gcc --version
 
         echo "=== Cloning amneziawg-tools v1.0.20260223 ==="
         git clone --branch v1.0.20260223 --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git "../$TOOLS_DIR"
@@ -188,15 +192,13 @@ jobs:
         echo "=== Checking for wireguard.h ==="
         find . -name "wireguard.h" -type f 2>/dev/null || echo "wireguard.h NOT FOUND"
 
-        # Fix double linux/linux path — symlink bana dein
         if [ -f uapi/linux/linux/wireguard.h ] && [ ! -f uapi/linux/wireguard.h ]; then
           ln -s linux/wireguard.h uapi/linux/wireguard.h
           echo "Created symlink: uapi/linux/wireguard.h -> linux/wireguard.h"
         fi
 
-        echo "=== Building awg statically for ARMv7 (Ubuntu gcc) ==="
-        # Ubuntu ka cross gcc use karein, Linaro 4.7 nahi
-        export CC=arm-linux-gnueabihf-gcc
+        echo "=== Building awg statically for ARMv7 (musl) ==="
+        export CC=arm-linux-musleabihf-gcc
         export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
         export LDFLAGS="-static -s"
 
@@ -225,7 +227,25 @@ jobs:
         echo "=== Verifying awg binary ==="
         file "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
         ls -la "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
-    # ======================================================================
+
+    - name: Show awg binary size (summary)
+      if: success()
+      shell: bash
+      run: |
+        AWG_BIN="$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg"
+        if [ ! -f "$AWG_BIN" ]; then
+          echo "ERROR: awg binary not found!"; exit 1
+        fi
+        echo "=========================================="
+        echo " awg binary details"
+        echo "=========================================="
+        file "$AWG_BIN"
+        echo "------------------------------------------"
+        echo "Size (human readable): $(du -h "$AWG_BIN" | cut -f1)"
+        echo "Size (bytes): $(stat -c %s "$AWG_BIN")"
+        echo "=========================================="
+        echo "✅ If size is ~100-130 KB, musl static build worked correctly."
+        echo "=========================================="
 
     - name: Show Tools Build Log Summary
       if: always()
@@ -234,7 +254,8 @@ jobs:
         echo "=== Tools build warnings/errors ==="
         grep -iE "warning|error" /tmp/tools-build.log || echo "No warnings or errors found"
 
-    - name: Package awg tool (awg only)
+    # ===================== ZIP / TAR =====================
+    - name: Package awg tool (awg only) into tar.gz
       if: success()
       shell: bash
       run: |
@@ -246,8 +267,11 @@ jobs:
         fi
         cp awg-tools-out/usr/bin/awg awg-tools-release/
         chmod +x awg-tools-release/awg
+
         tar -czf awg-tools-armv7.tar.gz -C awg-tools-release .
+        echo "=== Tarball created ==="
         ls -la awg-tools-armv7.tar.gz
+        echo "Tarball size: $(du -h awg-tools-armv7.tar.gz | cut -f1)"
         echo "=== Contents of tarball ==="
         tar -tzf awg-tools-armv7.tar.gz
 
@@ -288,7 +312,7 @@ jobs:
 
           **Contents:**
           - `amneziawg.ko` — Kernel module (vermagic 3.10.100+ ARMv7)
-          - `awg-tools-armv7.tar.gz` — Static `awg` binary for ARMv7
+          - `awg-tools-armv7.tar.gz` — Static `awg` binary for ARMv7 (musl, ~120 KB)
 
           **Note:** `awg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only).
 
@@ -298,3 +322,4 @@ jobs:
           tar -xzf awg-tools-armv7.tar.gz -C /usr/bin/
           chmod +x /usr/bin/awg
           awg --version
+          ```
