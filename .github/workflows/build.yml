@@ -178,13 +178,12 @@ jobs:
       run: |
         TOOLS_DIR="amneziawg-tools-src"
 
-        echo "=== Downloading musl-cross-make ARM toolchain ==="
-        MUSL_URL="https://musl.cc/arm-linux-musleabihf-cross.tgz"
-        wget -q "$MUSL_URL" -O /tmp/musl-cross.tgz
-        tar -xzf /tmp/musl-cross.tgz -C /opt/
-        export PATH="/opt/arm-linux-musleabihf-cross/bin:$PATH"
-        arm-linux-musleabihf-gcc --version
-
+        echo "=== Downloading musl toolchain from landley.net ==="
+        MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
+        tar -xJf /tmp/musl-cross.tar.xz -C /opt/
+        export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+        armv7l-linux-musleabihf-gcc --version
         echo "=== Cloning amneziawg-tools v1.0.20260223 ==="
         git clone --branch v1.0.20260223 --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git "../$TOOLS_DIR"
         cd "../$TOOLS_DIR/src"
