@@ -123,7 +123,7 @@ jobs:
         tar -xJf /tmp/musl-cross.tar.xz -C /opt/
         export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
         export CC=armv7l-linux-musleabihf-gcc
-        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
+        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
         export LDFLAGS="-static -s"
 
         wget -q https://www.netfilter.org/pub/libmnl/libmnl-1.0.5.tar.bz2 -O /tmp/libmnl-1.0.5.tar.bz2
@@ -139,7 +139,7 @@ jobs:
         make -j$(nproc)
         make install
 
-    - name: Build ipset userspace binary (static ARMv7, musl)
+    - name: Build ipset userspace binary (STATIC ARMv7, musl)
       shell: bash
       run: |
         MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
@@ -148,8 +148,10 @@ jobs:
         export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
 
         export PKG_CONFIG_PATH="/tmp/libmnl-install/lib/pkgconfig:$PKG_CONFIG_PATH"
-        export CFLAGS="-Os -flto -ffunction-sections -fdata-sections -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static -I/tmp/libmnl-install/include"
-        export LDFLAGS="-static -s -Wl,--gc-sections -L/tmp/libmnl-install/lib"
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static -I/tmp/libmnl-install/include"
+        # -all-static = libtool ko force static link karwata hai (ASLI FIX)
+        export LDFLAGS="-static -s -Wl,--gc-sections -L/tmp/libmnl-install/lib -all-static"
 
         wget -q https://www.netfilter.org/pub/ipset/ipset-6.38.tar.bz2 -O /tmp/ipset-6.38.tar.bz2
         tar -xjf /tmp/ipset-6.38.tar.bz2 -C /tmp/
@@ -158,21 +160,33 @@ jobs:
         # musl fix: basename() ke liye libgen.h include karein
         sed -i '1s/^/#include <libgen.h>\n/' src/ipset.c
 
-        export CC=armv7l-linux-musleabihf-gcc
-
         ./configure \
           --host=armv7l-linux-musleabihf \
           --prefix=/usr \
           --enable-static=yes \
           --enable-shared=no \
-          --with-kmod=no
+          --with-kmod=no \
+          --disable-dynamic
 
-        make -j$(nproc) 2>&1 | tee /tmp/ipset-build.log
+        # make par bhi -all-static force karein
+        make -j$(nproc) LDFLAGS="-static -s -all-static -L/tmp/libmnl-install/lib" 2>&1 | tee /tmp/ipset-build.log
         make install DESTDIR="$GITHUB_WORKSPACE/ipset-out" 2>&1 | tee -a /tmp/ipset-build.log
 
         echo "=== Verifying ipset binary ==="
-        file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" || true
-        ls -la "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" || true
+        file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset"
+        ls -la "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset"
+
+        # STATIC VERIFICATION: agar dynamically linked hai to build FAIL karein
+        if file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" | grep -q "dynamically linked"; then
+          echo "::error::ERROR: ipset is still DYNAMICALLY linked!"
+          armv7l-linux-musleabihf-readelf -d "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" || true
+          exit 1
+        fi
+        if ! file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" | grep -q "statically linked"; then
+          echo "::error::ERROR: ipset is NOT statically linked!"
+          exit 1
+        fi
+        echo "OK: ipset is STATICALLY linked ✅"
 
     - name: Package ipset binary
       if: success()
@@ -190,14 +204,14 @@ jobs:
       with:
         tag_name: ${{ github.event.inputs.version }}
         name: ipset E5885 ${{ github.event.inputs.version }}
-        overwrite: true
+        overwrite_files: true
         files: |
           ipset-modules-armv7.tar.gz
           ipset-armv7.tar.gz
         body: |
           ipset for Huawei E5885 (kernel 3.10)
           - `ipset-modules-armv7.tar.gz` — kernel modules
-          - `ipset-armv7.tar.gz` — static `ipset` userspace binary
+          - `ipset-armv7.tar.gz` — STATIC `ipset` userspace binary
           **Install:**
           ```sh
           tar -xzf ipset-modules-armv7.tar.gz -C /system/modules/
