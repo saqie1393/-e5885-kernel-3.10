@@ -114,7 +114,31 @@ jobs:
           modinfo "$ko" 2>/dev/null | grep vermagic || true
         done
         tar -czf "$GITHUB_WORKSPACE/ipset-modules-armv7.tar.gz" -C "$GITHUB_WORKSPACE/ipset-modules" .
-    
+
+    - name: Build libmnl for ARMv7 musl
+      shell: bash
+      run: |
+        MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
+        tar -xJf /tmp/musl-cross.tar.xz -C /opt/
+        export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
+        export LDFLAGS="-static -s"
+
+        wget -q https://www.netfilter.org/pub/libmnl/libmnl-1.0.5.tar.bz2 -O /tmp/libmnl-1.0.5.tar.bz2
+        tar -xjf /tmp/libmnl-1.0.5.tar.bz2 -C /tmp/
+        cd /tmp/libmnl-1.0.5
+
+        ./configure \
+          --host=armv7l-linux-musleabihf \
+          --prefix=/tmp/libmnl-install \
+          --enable-static=yes \
+          --enable-shared=no
+
+        make -j$(nproc)
+        make install
+
     - name: Build ipset userspace binary (static ARMv7, musl)
       shell: bash
       run: |
@@ -122,6 +146,10 @@ jobs:
         wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
         tar -xJf /tmp/musl-cross.tar.xz -C /opt/
         export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+
+        export PKG_CONFIG_PATH="/tmp/libmnl-install/lib/pkgconfig:$PKG_CONFIG_PATH"
+        export CFLAGS="-Os -flto -ffunction-sections -fdata-sections -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static -I/tmp/libmnl-install/include"
+        export LDFLAGS="-static -s -Wl,--gc-sections -L/tmp/libmnl-install/lib"
 
         wget -q https://www.netfilter.org/pub/ipset/ipset-6.38.tar.bz2 -O /tmp/ipset-6.38.tar.bz2
         tar -xjf /tmp/ipset-6.38.tar.bz2 -C /tmp/
@@ -131,8 +159,6 @@ jobs:
         sed -i '1s/^/#include <libgen.h>\n/' src/ipset.c
 
         export CC=armv7l-linux-musleabihf-gcc
-        export CFLAGS="-Os -flto -ffunction-sections -fdata-sections -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
-        export LDFLAGS="-static -s -Wl,--gc-sections"
 
         ./configure \
           --host=armv7l-linux-musleabihf \
@@ -147,6 +173,7 @@ jobs:
         echo "=== Verifying ipset binary ==="
         file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" || true
         ls -la "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" || true
+
     - name: Package ipset binary
       if: success()
       shell: bash
