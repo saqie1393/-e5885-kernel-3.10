@@ -149,9 +149,8 @@ jobs:
 
         export PKG_CONFIG_PATH="/tmp/libmnl-install/lib/pkgconfig:$PKG_CONFIG_PATH"
         export CC=armv7l-linux-musleabihf-gcc
-        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static -I/tmp/libmnl-install/include"
-        # -all-static = libtool ko force static link karwata hai (ASLI FIX)
-        export LDFLAGS="-static -s -Wl,--gc-sections -L/tmp/libmnl-install/lib -all-static"
+        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static -fno-pie -I/tmp/libmnl-install/include"
+        export LDFLAGS="-static -s -Wl,--gc-sections -L/tmp/libmnl-install/lib -all-static -no-pie"
 
         wget -q https://www.netfilter.org/pub/ipset/ipset-6.38.tar.bz2 -O /tmp/ipset-6.38.tar.bz2
         tar -xjf /tmp/ipset-6.38.tar.bz2 -C /tmp/
@@ -165,11 +164,10 @@ jobs:
           --prefix=/usr \
           --enable-static=yes \
           --enable-shared=no \
-          --with-kmod=no \
-          --disable-dynamic
+          --with-kmod=no
 
         # make par bhi -all-static force karein
-        make -j$(nproc) LDFLAGS="-static -s -all-static -L/tmp/libmnl-install/lib" 2>&1 | tee /tmp/ipset-build.log
+        make -j$(nproc) LDFLAGS="-static -s -all-static -no-pie -L/tmp/libmnl-install/lib" 2>&1 | tee /tmp/ipset-build.log
         make install DESTDIR="$GITHUB_WORKSPACE/ipset-out" 2>&1 | tee -a /tmp/ipset-build.log
 
         echo "=== Verifying ipset binary ==="
@@ -186,7 +184,7 @@ jobs:
           echo "::error::ERROR: ipset is NOT statically linked!"
           exit 1
         fi
-        echo "OK: ipset is STATICALLY linked ✅"
+        echo "OK: ipset is STATICALLY linked"
 
     - name: Package ipset binary
       if: success()
