@@ -114,25 +114,63 @@ jobs:
           modinfo "$ko" 2>/dev/null | grep vermagic || true
         done
         tar -czf "$GITHUB_WORKSPACE/ipset-modules-armv7.tar.gz" -C "$GITHUB_WORKSPACE/ipset-modules" .
+    
+    - name: Build ipset userspace binary (static ARMv7, musl)
+      shell: bash
+      run: |
+        MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
+        tar -xJf /tmp/musl-cross.tar.xz -C /opt/
+        export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+
+        wget -q https://www.netfilter.org/pub/ipset/ipset-6.38.tar.bz2 -O /tmp/ipset-6.38.tar.bz2
+        tar -xjf /tmp/ipset-6.38.tar.bz2 -C /tmp/
+        cd /tmp/ipset-6.38
+
+        # musl fix: basename() ke liye libgen.h include karein
+        sed -i '1s/^/#include <libgen.h>\n/' src/ipset.c
+
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -flto -ffunction-sections -fdata-sections -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
+        export LDFLAGS="-static -s -Wl,--gc-sections"
+
+        ./configure \
+          --host=armv7l-linux-musleabihf \
+          --prefix=/usr \
+          --enable-static=yes \
+          --enable-shared=no \
+          --with-kmod=no
+
+        make -j$(nproc) 2>&1 | tee /tmp/ipset-build.log
+        make install DESTDIR="$GITHUB_WORKSPACE/ipset-out" 2>&1 | tee -a /tmp/ipset-build.log
+
+        echo "=== Verifying ipset binary ==="
+        file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" || true
+        ls -la "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" || true
+    - name: Package ipset binary
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p ipset-release
+        cp ipset-out/usr/sbin/ipset ipset-release/
+        chmod +x ipset-release/ipset
+        tar -czf ipset-armv7.tar.gz -C ipset-release .
 
     - name: Create Release
       if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
-        name: ipset modules E5885 ${{ github.event.inputs.version }}
+        name: ipset E5885 ${{ github.event.inputs.version }}
         overwrite: true
         files: |
           ipset-modules-armv7.tar.gz
+          ipset-armv7.tar.gz
         body: |
-          ipset kernel modules for Huawei E5885 (kernel 3.10)
-
-          **Included:**
-          - `ip_set.ko`
-          - `ip_set_hash_ip.ko`
-          - `xt_set.ko`
-          - (and other configured `ip_set_*` modules)
-
+          ipset for Huawei E5885 (kernel 3.10)
+          - `ipset-modules-armv7.tar.gz` — kernel modules
+          - `ipset-armv7.tar.gz` — static `ipset` userspace binary
           **Install:**
           ```sh
           tar -xzf ipset-modules-armv7.tar.gz -C /system/modules/
