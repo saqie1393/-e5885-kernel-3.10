@@ -115,7 +115,7 @@ jobs:
         done
         tar -czf "$GITHUB_WORKSPACE/ipset-modules-armv7.tar.gz" -C "$GITHUB_WORKSPACE/ipset-modules" .
 
-    - name: Build libmnl for ARMv7 musl (static, no-pie)
+    - name: Build libmnl for ARMv7 musl (static)
       shell: bash
       run: |
         MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
@@ -123,9 +123,9 @@ jobs:
         tar -xJf /tmp/musl-cross.tar.xz -C /opt/
         export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
 
-        export CC="armv7l-linux-musleabihf-gcc -no-pie"
-        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -fno-pie"
-        export LDFLAGS="-static -s -no-pie"
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
+        export LDFLAGS="-static -s"
 
         wget -q https://www.netfilter.org/pub/libmnl/libmnl-1.0.5.tar.bz2 -O /tmp/libmnl-1.0.5.tar.bz2
         tar -xjf /tmp/libmnl-1.0.5.tar.bz2 -C /tmp/
@@ -135,13 +135,12 @@ jobs:
           --host=armv7l-linux-musleabihf \
           --prefix=/tmp/libmnl-install \
           --enable-static=yes \
-          --enable-shared=no \
-          --disable-pie
+          --enable-shared=no
 
         make -j$(nproc)
         make install
 
-    - name: Build ipset userspace binary (STATIC ARMv7, musl, no-pie)
+    - name: Build ipset userspace binary (STATIC ARMv7, libtool bypass)
       shell: bash
       run: |
         MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
@@ -150,9 +149,9 @@ jobs:
         export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
 
         export PKG_CONFIG_PATH="/tmp/libmnl-install/lib/pkgconfig:$PKG_CONFIG_PATH"
-        export CC="armv7l-linux-musleabihf-gcc -no-pie"
-        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static -fno-pie -I/tmp/libmnl-install/include"
-        export LDFLAGS="-static -s -Wl,--gc-sections -L/tmp/libmnl-install/lib -all-static -no-pie"
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -fno-pie -I/tmp/libmnl-install/include"
+        export LDFLAGS="-static -s -Wl,-no-pie -L/tmp/libmnl-install/lib"
 
         wget -q https://www.netfilter.org/pub/ipset/ipset-6.38.tar.bz2 -O /tmp/ipset-6.38.tar.bz2
         tar -xjf /tmp/ipset-6.38.tar.bz2 -C /tmp/
@@ -166,24 +165,31 @@ jobs:
           --prefix=/usr \
           --enable-static=yes \
           --enable-shared=no \
-          --with-kmod=no \
-          --disable-pie
+          --with-kmod=no
 
-        # make par bhi -all-static aur -no-pie force karein
-        make -j$(nproc) CC="armv7l-linux-musleabihf-gcc -no-pie" LDFLAGS="-static -s -all-static -no-pie -L/tmp/libmnl-install/lib" 2>&1 | tee /tmp/ipset-build.log
-        make install DESTDIR="$GITHUB_WORKSPACE/ipset-out" 2>&1 | tee -a /tmp/ipset-build.log
+        # Compile karein (link libtool karega, lekin hum usay bypass karenge)
+        make -j$(nproc) 2>&1 | tee /tmp/ipset-build.log
+
+        # === ASAL FIX: libtool bypass, directly .a files se static link ===
+        cd /tmp/ipset-6.38/src
+        armv7l-linux-musleabihf-gcc \
+          -static -s -Wl,-no-pie \
+          -o /tmp/ipset-static \
+          ipset.o ui.o \
+          ../lib/.libs/libipset.a \
+          /tmp/libmnl-install/lib/libmnl.a \
+          -lm
 
         echo "=== Verifying ipset binary ==="
-        file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset"
-        ls -la "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset"
+        file /tmp/ipset-static
+        ls -la /tmp/ipset-static
 
         # STATIC VERIFICATION: agar dynamically linked hai to build FAIL karein
-        if file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" | grep -q "dynamically linked"; then
-          echo "::error::ERROR: ipset is still DYNAMICALLY linked!"
-          armv7l-linux-musleabihf-readelf -d "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" || true
+        if file /tmp/ipset-static | grep -q "dynamically linked"; then
+          echo "::error::ERROR: ipset is DYNAMICALLY linked!"
           exit 1
         fi
-        if ! file "$GITHUB_WORKSPACE/ipset-out/usr/sbin/ipset" | grep -q "statically linked"; then
+        if ! file /tmp/ipset-static | grep -q "statically linked"; then
           echo "::error::ERROR: ipset is NOT statically linked!"
           exit 1
         fi
@@ -195,7 +201,7 @@ jobs:
       run: |
         cd "$GITHUB_WORKSPACE"
         mkdir -p ipset-release
-        cp ipset-out/usr/sbin/ipset ipset-release/
+        cp /tmp/ipset-static ipset-release/ipset
         chmod +x ipset-release/ipset
         tar -czf ipset-armv7.tar.gz -C ipset-release .
 
