@@ -1,0 +1,52 @@
+    - name: Build ipset modules
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+
+        echo "=== Enabling ipset configs in defconfig ==="
+        DEFCONFIG="arch/arm/configs/hi6932_E5885Ls-93a_defconfig"
+
+        # Ensure options are present (append if missing, update if present)
+        for opt in \
+          "CONFIG_NETFILTER_ADVANCED=y" \
+          "CONFIG_IP_SET=m" \
+          "CONFIG_IP_SET_MAX=256" \
+          "CONFIG_IP_SET_BITMAP_IP=m" \
+          "CONFIG_IP_SET_BITMAP_IPMAC=m" \
+          "CONFIG_IP_SET_BITMAP_PORT=m" \
+          "CONFIG_IP_SET_HASH_IP=m" \
+          "CONFIG_IP_SET_HASH_IPMARK=m" \
+          "CONFIG_IP_SET_HASH_IPPORT=m" \
+          "CONFIG_IP_SET_HASH_IPPORTIP=m" \
+          "CONFIG_IP_SET_HASH_IPPORTNET=m" \
+          "CONFIG_IP_SET_HASH_NET=m" \
+          "CONFIG_IP_SET_HASH_NETNET=m" \
+          "CONFIG_IP_SET_HASH_NETPORT=m" \
+          "CONFIG_IP_SET_HASH_MAC=m" \
+          "CONFIG_IP_SET_LIST_SET=m" \
+          "CONFIG_NETFILTER_XT_SET=m"
+        do
+          key="${opt%%=*}"
+          if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^${key}=.*|${opt}|" "$DEFCONFIG"
+          elif grep -q "^# ${key} is not set" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^# ${key} is not set|${opt}|" "$DEFCONFIG"
+          else
+            echo "$opt" >> "$DEFCONFIG"
+          fi
+        done
+
+        echo "=== Reconfiguring kernel with updated defconfig ==="
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5885Ls-93a_defconfig
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
+
+        echo "=== Building ipset modules ==="
+        make -C . M=net/netfilter/ipset ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules
+        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules
+
+        echo "=== Verifying built modules ==="
+        find net/netfilter -name "*.ko" -type f | head -20
+        ls -la net/netfilter/ipset/*.ko 2>/dev/null || true
+        ls -la net/netfilter/xt_set.ko 2>/dev/null || true
