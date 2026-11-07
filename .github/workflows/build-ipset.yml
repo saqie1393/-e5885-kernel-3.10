@@ -153,13 +153,13 @@ jobs:
         export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -fno-pie -I/tmp/libmnl-install/include"
         export LDFLAGS="-static -s -Wl,-no-pie -L/tmp/libmnl-install/lib"
 
-        wget -q https://www.netfilter.org/pub/ipset/ipset-6.38.tar.bz2 -O /tmp/ipset-6.38.tar.bz2
-        tar -xjf /tmp/ipset-6.38.tar.bz2 -C /tmp/
-        cd /tmp/ipset-6.38
+        wget -q https://www.netfilter.org/pub/ipset/ipset-7.10.tar.bz2 -O /tmp/ipset-7.10.tar.bz2
+        tar -xjf /tmp/ipset-7.10.tar.bz2 -C /tmp/
+        cd /tmp/ipset-7.10
 
-        # musl fix: basename() ke liye libgen.h include karein
+        # musl fix: basename() ke liye libgen.h include karein (yeh 7.10 mein bhi zaroori hai)
         sed -i '1s/^/#include <libgen.h>\n/' src/ipset.c
-
+        
         ./configure \
           --host=armv7l-linux-musleabihf \
           --prefix=/usr \
