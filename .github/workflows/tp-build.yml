@@ -1,0 +1,170 @@
+name: Build NFQUEUE modules for E5885
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version'
+        required: true
+        default: 'v1.0.0-nfqueue'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout E5885 Kernel
+      uses: actions/checkout@v4
+
+    - name: Install Build Dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch
+
+    - name: Extract Linaro GCC 4.7
+      shell: bash
+      run: |
+        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
+        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        arm-linux-gnueabihf-gcc --version
+
+    - name: Detect Kernel Directory
+      shell: bash
+      run: |
+        if [ -f Makefile ] && grep -q "mrproper" Makefile; then
+          KERNEL_DIR="."
+        elif [ -f kernel/Makefile ]; then
+          KERNEL_DIR="kernel"
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
+          KERNEL_DIR="kernel/e5885-kernel-3.10"
+        else
+          echo "Kernel Makefile not found!"; exit 1
+        fi
+        echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+
+    - name: Inspect NFQUEUE config options in kernel source
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        echo "===== NFQUEUE related lines in net/netfilter/Kconfig ====="
+        grep -n -i "nfqueue\|nfnetlink_queue\|nf_conntrack" net/netfilter/Kconfig || echo "No NFQUEUE found in Kconfig"
+
+        echo "===== Existing NFQUEUE/CONNTRACK in defconfig ====="
+        grep -n -E "NFQUEUE|NFNETLINK_QUEUE|NF_CONNTRACK" arch/arm/configs/hi6932_E5885Ls-93a_defconfig || echo "None found in defconfig"
+
+    - name: Enable NFQUEUE in defconfig
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        DEFCONFIG="arch/arm/configs/hi6932_E5885Ls-93a_defconfig"
+
+        # NFQUEUE ke liye zaroori options
+        # Note: NF_CONNTRACK pehle se y hi enabled ho sakta hai (aapke pehle log mein CONFIG_NF_CONNTRACK nahi tha)
+        for opt in \
+          "CONFIG_NETFILTER_ADVANCED=y" \
+          "CONFIG_NF_CONNTRACK=m" \
+          "CONFIG_NETFILTER_NETLINK=m" \
+          "CONFIG_NETFILTER_NETLINK_QUEUE=m" \
+          "CONFIG_NETFILTER_XT_TARGET_NFQUEUE=m"
+        do
+          key="${opt%%=*}"
+          if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^${key}=.*|${opt}|" "$DEFCONFIG"
+          elif grep -q "^# ${key} is not set" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^# ${key} is not set|${opt}|" "$DEFCONFIG"
+          else
+            echo "$opt" >> "$DEFCONFIG"
+          fi
+        done
+
+        echo "===== defconfig mein NFQUEUE lines ====="
+        grep -E "NFQUEUE|NFNETLINK_QUEUE|NF_CONNTRACK" "$DEFCONFIG" || echo "NOT FOUND"
+
+    - name: Configure Kernel (ARM)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5885Ls-93a_defconfig
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
+
+    - name: Verify NFQUEUE enabled in .config
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        echo "===== .config NFQUEUE lines ====="
+        grep -E "NFQUEUE|NFNETLINK_QUEUE|NF_CONNTRACK" .config || echo "NOT FOUND in .config!"
+        # Agar NFQUEUE enabled nahi hai to fail karo
+        if ! grep -q "^CONFIG_NETFILTER_XT_TARGET_NFQUEUE=m" .config; then
+          echo "::error::CONFIG_NETFILTER_XT_TARGET_NFQUEUE is NOT enabled in .config"
+          exit 1
+        fi
+
+    - name: Build NFQUEUE modules
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        # netfilter core (nfnetlink_queue, xt_NFQUEUE etc.)
+        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee /tmp/nfqueue-build.log
+        # conntrack (agar alag directory mein hai)
+        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee -a /tmp/nfqueue-build.log
+
+    - name: Strip and Verify NFQUEUE modules
+      if: success()
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        mkdir -p "$GITHUB_WORKSPACE/nfqueue-out"
+
+        # NFQUEUE related modules
+        cp net/netfilter/nfnetlink_queue.ko "$GITHUB_WORKSPACE/nfqueue-out/" 2>/dev/null || true
+        cp net/netfilter/xt_NFQUEUE.ko "$GITHUB_WORKSPACE/nfqueue-out/" 2>/dev/null || true
+        cp net/netfilter/nf_conntrack.ko "$GITHUB_WORKSPACE/nfqueue-out/" 2>/dev/null || true
+        cp net/netfilter/nfnetlink.ko "$GITHUB_WORKSPACE/nfqueue-out/" 2>/dev/null || true
+
+        # Verify
+        if [ ! -f "$GITHUB_WORKSPACE/nfqueue-out/xt_NFQUEUE.ko" ]; then
+          echo "::error::xt_NFQUEUE.ko was NOT built!"
+          exit 1
+        fi
+
+        for ko in "$GITHUB_WORKSPACE/nfqueue-out/"*.ko; do
+          arm-linux-gnueabihf-strip --strip-unneeded "$ko" 2>/dev/null || true
+          file "$ko"
+          modinfo "$ko" 2>/dev/null | grep vermagic || true
+        done
+
+        tar -czf "$GITHUB_WORKSPACE/nfqueue-modules-armv7.tar.gz" -C "$GITHUB_WORKSPACE/nfqueue-out" .
+
+    - name: Create Release
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.version }}
+        name: NFQUEUE E5885 ${{ github.event.inputs.version }}
+        overwrite_files: true
+        files: |
+          nfqueue-modules-armv7.tar.gz
+        body: |
+          NFQUEUE modules for Huawei E5885 (kernel 3.10)
+
+          **Modules included:**
+          - nfnetlink.ko
+          - nfnetlink_queue.ko
+          - xt_NFQUEUE.ko
+          - nf_conntrack.ko
+
+          **Install:**
+          ```sh
+          insmod nfnetlink.ko
+          insmod nf_conntrack.ko
+          insmod nfnetlink_queue.ko
+          insmod xt_NFQUEUE.ko
