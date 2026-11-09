@@ -55,6 +55,7 @@ jobs:
 
         for opt in \
           "CONFIG_NETFILTER_ADVANCED=y" \
+          "CONFIG_NETFILTER_TPROXY=m" \
           "CONFIG_NETFILTER_XT_MATCH_SOCKET=m"
         do
           key="${opt%%=*}"
@@ -67,8 +68,8 @@ jobs:
           fi
         done
 
-        echo "===== defconfig mein socket line ====="
-        grep "CONFIG_NETFILTER_XT_MATCH_SOCKET" "$DEFCONFIG" || echo "NOT FOUND"
+        echo "===== defconfig mein socket + tproxy lines ====="
+        grep -E "NETFILTER_TPROXY|NETFILTER_XT_MATCH_SOCKET" "$DEFCONFIG" || echo "NOT FOUND"
 
     - name: Configure Kernel (ARM)
       shell: bash
