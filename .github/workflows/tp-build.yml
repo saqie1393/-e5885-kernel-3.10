@@ -1,4 +1,4 @@
-name: Build xt_socket module for E5885
+name: Build xt_conntrack module for E5885
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       version:
         description: 'Release Version'
         required: true
-        default: 'v1.0.0-xtsocket'
+        default: 'v1.0.0-conntrack'
 
 jobs:
   build:
@@ -47,7 +47,7 @@ jobs:
         fi
         echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
 
-    - name: Enable xt_socket in defconfig
+    - name: Enable xt_conntrack in defconfig
       shell: bash
       run: |
         cd "$KERNEL_DIR"
@@ -55,8 +55,7 @@ jobs:
 
         for opt in \
           "CONFIG_NETFILTER_ADVANCED=y" \
-          "CONFIG_NETFILTER_TPROXY=m" \
-          "CONFIG_NETFILTER_XT_MATCH_SOCKET=m"
+          "CONFIG_NETFILTER_XT_MATCH_CONNTRACK=m"
         do
           key="${opt%%=*}"
           if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
@@ -68,8 +67,8 @@ jobs:
           fi
         done
 
-        echo "===== defconfig mein socket + tproxy lines ====="
-        grep -E "NETFILTER_TPROXY|NETFILTER_XT_MATCH_SOCKET" "$DEFCONFIG" || echo "NOT FOUND"
+        echo "===== defconfig mein conntrack lines ====="
+        grep "CONNTRACK" "$DEFCONFIG" || echo "NOT FOUND"
 
     - name: Configure Kernel (ARM)
       shell: bash
@@ -80,22 +79,22 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Verify socket enabled in .config
+    - name: Verify conntrack enabled in .config
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        grep "CONFIG_NETFILTER_XT_MATCH_SOCKET" .config || echo "NOT FOUND in .config!"
-        if ! grep -q "^CONFIG_NETFILTER_XT_MATCH_SOCKET=m" .config; then
-          echo "::error::CONFIG_NETFILTER_XT_MATCH_SOCKET is NOT enabled"
+        grep "CONFIG_NETFILTER_XT_MATCH_CONNTRACK" .config || echo "NOT FOUND in .config!"
+        if ! grep -q "^CONFIG_NETFILTER_XT_MATCH_CONNTRACK=m" .config; then
+          echo "::error::CONFIG_NETFILTER_XT_MATCH_CONNTRACK is NOT enabled"
           exit 1
         fi
 
-    - name: Build xt_socket module
+    - name: Build xt_conntrack module
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee /tmp/xtsocket-build.log
+        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee /tmp/conntrack-build.log
 
     - name: Strip and Package
       if: success()
@@ -103,32 +102,32 @@ jobs:
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        mkdir -p "$GITHUB_WORKSPACE/xtsocket-out"
+        mkdir -p "$GITHUB_WORKSPACE/conntrack-out"
 
-        cp net/netfilter/xt_socket.ko "$GITHUB_WORKSPACE/xtsocket-out/" 2>/dev/null || true
+        cp net/netfilter/xt_conntrack.ko "$GITHUB_WORKSPACE/conntrack-out/" 2>/dev/null || true
 
-        if [ ! -f "$GITHUB_WORKSPACE/xtsocket-out/xt_socket.ko" ]; then
-          echo "::error::xt_socket.ko was NOT built!"
+        if [ ! -f "$GITHUB_WORKSPACE/conntrack-out/xt_conntrack.ko" ]; then
+          echo "::error::xt_conntrack.ko was NOT built!"
           exit 1
         fi
 
-        arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/xtsocket-out/xt_socket.ko"
-        file "$GITHUB_WORKSPACE/xtsocket-out/xt_socket.ko"
+        arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/conntrack-out/xt_conntrack.ko"
+        file "$GITHUB_WORKSPACE/conntrack-out/xt_conntrack.ko"
 
-        tar -czf "$GITHUB_WORKSPACE/xt_socket-armv7.tar.gz" -C "$GITHUB_WORKSPACE/xtsocket-out" .
+        tar -czf "$GITHUB_WORKSPACE/xt_conntrack-armv7.tar.gz" -C "$GITHUB_WORKSPACE/conntrack-out" .
 
     - name: Create Release
       if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
-        name: xt_socket E5885 ${{ github.event.inputs.version }}
+        name: xt_conntrack E5885 ${{ github.event.inputs.version }}
         overwrite_files: true
         files: |
-          xt_socket-armv7.tar.gz
+          xt_conntrack-armv7.tar.gz
         body: |
-          xt_socket module for Huawei E5885 (kernel 3.10)
+          xt_conntrack module for Huawei E5885 (kernel 3.10)
 
           **Install:**
           ```sh
-          insmod /system/modules/xt_socket.ko
+          insmod /system/modules/xt_conntrack.ko
