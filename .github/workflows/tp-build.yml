@@ -1,4 +1,4 @@
-name: Build NFQUEUE modules for E5885
+name: Build xt_connbytes module for E5885
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       version:
         description: 'Release Version'
         required: true
-        default: 'v1.0.0-nfqueue'
+        default: 'v1.0.0-connbytes'
 
 jobs:
   build:
@@ -47,30 +47,15 @@ jobs:
         fi
         echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
 
-    - name: Inspect NFQUEUE config options in kernel source
-      shell: bash
-      run: |
-        cd "$KERNEL_DIR"
-        echo "===== NFQUEUE related lines in net/netfilter/Kconfig ====="
-        grep -n -i "nfqueue\|nfnetlink_queue\|nf_conntrack" net/netfilter/Kconfig || echo "No NFQUEUE found in Kconfig"
-
-        echo "===== Existing NFQUEUE/CONNTRACK in defconfig ====="
-        grep -n -E "NFQUEUE|NFNETLINK_QUEUE|NF_CONNTRACK" arch/arm/configs/hi6932_E5885Ls-93a_defconfig || echo "None found in defconfig"
-
-    - name: Enable NFQUEUE in defconfig
+    - name: Enable xt_connbytes in defconfig
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         DEFCONFIG="arch/arm/configs/hi6932_E5885Ls-93a_defconfig"
 
-        # NFQUEUE ke liye zaroori options
-        # Note: NF_CONNTRACK pehle se y hi enabled ho sakta hai (aapke pehle log mein CONFIG_NF_CONNTRACK nahi tha)
         for opt in \
           "CONFIG_NETFILTER_ADVANCED=y" \
-          "CONFIG_NF_CONNTRACK=m" \
-          "CONFIG_NETFILTER_NETLINK=m" \
-          "CONFIG_NETFILTER_NETLINK_QUEUE=m" \
-          "CONFIG_NETFILTER_XT_TARGET_NFQUEUE=m"
+          "CONFIG_NETFILTER_XT_MATCH_CONNBYTES=m"
         do
           key="${opt%%=*}"
           if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
@@ -82,8 +67,8 @@ jobs:
           fi
         done
 
-        echo "===== defconfig mein NFQUEUE lines ====="
-        grep -E "NFQUEUE|NFNETLINK_QUEUE|NF_CONNTRACK" "$DEFCONFIG" || echo "NOT FOUND"
+        echo "===== defconfig mein connbytes line ====="
+        grep "CONNBYTES" "$DEFCONFIG" || echo "NOT FOUND"
 
     - name: Configure Kernel (ARM)
       shell: bash
@@ -94,77 +79,55 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Verify NFQUEUE enabled in .config
+    - name: Verify connbytes enabled in .config
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        echo "===== .config NFQUEUE lines ====="
-        grep -E "NFQUEUE|NFNETLINK_QUEUE|NF_CONNTRACK" .config || echo "NOT FOUND in .config!"
-        # Agar NFQUEUE enabled nahi hai to fail karo
-        if ! grep -q "^CONFIG_NETFILTER_XT_TARGET_NFQUEUE=m" .config; then
-          echo "::error::CONFIG_NETFILTER_XT_TARGET_NFQUEUE is NOT enabled in .config"
+        grep "CONFIG_NETFILTER_XT_MATCH_CONNBYTES" .config || echo "NOT FOUND in .config!"
+        if ! grep -q "^CONFIG_NETFILTER_XT_MATCH_CONNBYTES=m" .config; then
+          echo "::error::CONFIG_NETFILTER_XT_MATCH_CONNBYTES is NOT enabled"
           exit 1
         fi
 
-    - name: Build NFQUEUE modules
+    - name: Build xt_connbytes module
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        # netfilter core (nfnetlink_queue, xt_NFQUEUE etc.)
-        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee /tmp/nfqueue-build.log
-        # conntrack (agar alag directory mein hai)
-        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee -a /tmp/nfqueue-build.log
+        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee /tmp/connbytes-build.log
 
-    - name: Strip and Verify NFQUEUE modules
+    - name: Strip and Package
       if: success()
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        mkdir -p "$GITHUB_WORKSPACE/nfqueue-out"
+        mkdir -p "$GITHUB_WORKSPACE/connbytes-out"
 
-        # NFQUEUE related modules
-        cp net/netfilter/nfnetlink_queue.ko "$GITHUB_WORKSPACE/nfqueue-out/" 2>/dev/null || true
-        cp net/netfilter/xt_NFQUEUE.ko "$GITHUB_WORKSPACE/nfqueue-out/" 2>/dev/null || true
-        cp net/netfilter/nf_conntrack.ko "$GITHUB_WORKSPACE/nfqueue-out/" 2>/dev/null || true
-        cp net/netfilter/nfnetlink.ko "$GITHUB_WORKSPACE/nfqueue-out/" 2>/dev/null || true
+        cp net/netfilter/xt_connbytes.ko "$GITHUB_WORKSPACE/connbytes-out/" 2>/dev/null || true
 
-        # Verify
-        if [ ! -f "$GITHUB_WORKSPACE/nfqueue-out/xt_NFQUEUE.ko" ]; then
-          echo "::error::xt_NFQUEUE.ko was NOT built!"
+        if [ ! -f "$GITHUB_WORKSPACE/connbytes-out/xt_connbytes.ko" ]; then
+          echo "::error::xt_connbytes.ko was NOT built!"
           exit 1
         fi
 
-        for ko in "$GITHUB_WORKSPACE/nfqueue-out/"*.ko; do
-          arm-linux-gnueabihf-strip --strip-unneeded "$ko" 2>/dev/null || true
-          file "$ko"
-          modinfo "$ko" 2>/dev/null | grep vermagic || true
-        done
+        arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/connbytes-out/xt_connbytes.ko"
+        file "$GITHUB_WORKSPACE/connbytes-out/xt_connbytes.ko"
 
-        tar -czf "$GITHUB_WORKSPACE/nfqueue-modules-armv7.tar.gz" -C "$GITHUB_WORKSPACE/nfqueue-out" .
+        tar -czf "$GITHUB_WORKSPACE/xt_connbytes-armv7.tar.gz" -C "$GITHUB_WORKSPACE/connbytes-out" .
 
     - name: Create Release
       if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
-        name: NFQUEUE E5885 ${{ github.event.inputs.version }}
+        name: xt_connbytes E5885 ${{ github.event.inputs.version }}
         overwrite_files: true
         files: |
-          nfqueue-modules-armv7.tar.gz
+          xt_connbytes-armv7.tar.gz
         body: |
-          NFQUEUE modules for Huawei E5885 (kernel 3.10)
-
-          **Modules included:**
-          - nfnetlink.ko
-          - nfnetlink_queue.ko
-          - xt_NFQUEUE.ko
-          - nf_conntrack.ko
+          xt_connbytes module for Huawei E5885 (kernel 3.10)
 
           **Install:**
           ```sh
-          insmod nfnetlink.ko
-          insmod nf_conntrack.ko
-          insmod nfnetlink_queue.ko
-          insmod xt_NFQUEUE.ko
+          insmod /system/modules/xt_connbytes.ko
