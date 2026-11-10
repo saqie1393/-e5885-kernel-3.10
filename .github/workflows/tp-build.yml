@@ -1,4 +1,4 @@
-name: Build xt_conntrack module for E5885
+name: Build ip_set_hash_net for E5885
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       version:
         description: 'Release Version'
         required: true
-        default: 'v1.0.0-conntrack'
+        default: 'v1.0.0-hash-net'
 
 jobs:
   build:
@@ -30,6 +30,7 @@ jobs:
         tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
         sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
         echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
         export PATH=/opt/gcc-4.7/bin:$PATH
         arm-linux-gnueabihf-gcc --version
 
@@ -47,15 +48,17 @@ jobs:
         fi
         echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
 
-    - name: Enable xt_conntrack in defconfig
+    - name: Enable ip_set_hash_net in defconfig
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         DEFCONFIG="arch/arm/configs/hi6932_E5885Ls-93a_defconfig"
-
         for opt in \
           "CONFIG_NETFILTER_ADVANCED=y" \
-          "CONFIG_NETFILTER_XT_MATCH_CONNTRACK=m"
+          "CONFIG_IP_SET=m" \
+          "CONFIG_IP_SET_MAX=256" \
+          "CONFIG_IP_SET_HASH_NET=m" \
+          "CONFIG_NETFILTER_XT_SET=m"
         do
           key="${opt%%=*}"
           if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
@@ -67,10 +70,7 @@ jobs:
           fi
         done
 
-        echo "===== defconfig mein conntrack lines ====="
-        grep "CONNTRACK" "$DEFCONFIG" || echo "NOT FOUND"
-
-    - name: Configure Kernel (ARM)
+    - name: Configure E5885 Kernel (ARM)
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
@@ -79,55 +79,77 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Verify conntrack enabled in .config
-      shell: bash
-      run: |
-        cd "$KERNEL_DIR"
-        grep "CONFIG_NETFILTER_XT_MATCH_CONNTRACK" .config || echo "NOT FOUND in .config!"
-        if ! grep -q "^CONFIG_NETFILTER_XT_MATCH_CONNTRACK=m" .config; then
-          echo "::error::CONFIG_NETFILTER_XT_MATCH_CONNTRACK is NOT enabled"
-          exit 1
-        fi
-
-    - name: Build xt_conntrack module
+    - name: Build ONLY ip_set_hash_net.ko
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee /tmp/conntrack-build.log
+        # صرف ایک ہی .o بنائیں
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ \
+          CC=arm-linux-gnueabihf-gcc \
+          net/netfilter/ipset/ip_set_hash_net.o 2>&1 | tee /tmp/build.log
 
-    - name: Strip and Package
-      if: success()
+        # پھر اسے ماڈیول میں بند کریں
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ \
+          CC=arm-linux-gnueabihf-gcc \
+          M=net/netfilter/ipset CONFIG_IP_SET_HASH_NET=m modules 2>&1 | tee -a /tmp/build.log
+
+    - name: Verify + Strip ip_set_hash_net.ko
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        mkdir -p "$GITHUB_WORKSPACE/conntrack-out"
+        KO="net/netfilter/ipset/ip_set_hash_net.ko"
 
-        cp net/netfilter/xt_conntrack.ko "$GITHUB_WORKSPACE/conntrack-out/" 2>/dev/null || true
+        if [ ! -f "$KO" ]; then
+          echo "::error::ERROR: ip_set_hash_net.ko NOT built!"
+          echo "=== ipset dir contents ==="
+          ls -la net/netfilter/ipset/ || true
+          exit 1
+        fi
+        echo "OK: $KO built"
+        ls -la "$KO"
+        file "$KO"
 
-        if [ ! -f "$GITHUB_WORKSPACE/conntrack-out/xt_conntrack.ko" ]; then
-          echo "::error::xt_conntrack.ko was NOT built!"
+        # سائز چیک: اگر 0 یا بہت چھوٹا ہو تو truncated کا خطرہ
+        SIZE=$(stat -c%s "$KO")
+        echo "Size: $SIZE bytes"
+        if [ "$SIZE" -lt 4096 ]; then
+          echo "::error::ERROR: file too small, likely truncated!"
           exit 1
         fi
 
-        arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/conntrack-out/xt_conntrack.ko"
-        file "$GITHUB_WORKSPACE/conntrack-out/xt_conntrack.ko"
+        mkdir -p "$GITHUB_WORKSPACE/out"
+        arm-linux-gnueabihf-strip --strip-unneeded "$KO"
+        cp "$KO" "$GITHUB_WORKSPACE/out/"
+        file "$GITHUB_WORKSPACE/out/ip_set_hash_net.ko"
+        modinfo "$GITHUB_WORKSPACE/out/ip_set_hash_net.ko" 2>/dev/null | grep vermagic || true
 
-        tar -czf "$GITHUB_WORKSPACE/xt_conntrack-armv7.tar.gz" -C "$GITHUB_WORKSPACE/conntrack-out" .
+        # checksum تاکہ ڈیوائس پر منتقلی کے بعد تصدیق ہو سکے
+        sha256sum "$GITHUB_WORKSPACE/out/ip_set_hash_net.ko" | tee "$GITHUB_WORKSPACE/out/ip_set_hash_net.ko.sha256"
 
     - name: Create Release
       if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
-        name: xt_conntrack E5885 ${{ github.event.inputs.version }}
+        name: ip_set_hash_net E5885 ${{ github.event.inputs.version }}
         overwrite_files: true
         files: |
-          xt_conntrack-armv7.tar.gz
+          out/ip_set_hash_net.ko
+          out/ip_set_hash_net.ko.sha256
         body: |
-          xt_conntrack module for Huawei E5885 (kernel 3.10)
+          `ip_set_hash_net.ko` for Huawei E5885 (kernel 3.10, ARMv7).
 
           **Install:**
           ```sh
-          insmod /system/modules/xt_conntrack.ko
+          # پہلے dependencies لوڈ کریں (اگر پہلے سے نہیں ہیں)
+          insmod /system/modules/ip_set.ko
+          insmod /system/modules/ip_set_hash_net.ko
+          ```
+
+          **Checksum verify (truncated error سے بچنے کے لیے):**
+          ```sh
+          sha256sum -c ip_set_hash_net.ko.sha256
+          ```
+          اگر checksum میچ نہ ہو تو فائل دوبارہ منتقل کریں۔
