@@ -1,4 +1,4 @@
-name: Build ip_set_hash_net for E5885
+name: Build unfuck_nfqueue for B525
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       version:
         description: 'Release Version'
         required: true
-        default: 'v1.0.0-hash-net'
+        default: 'v1.0.0-unfuck-nfqueue'
 
 jobs:
   build:
@@ -15,7 +15,7 @@ jobs:
       contents: write
 
     steps:
-    - name: Checkout E5885 Kernel
+    - name: Checkout Kernel Source
       uses: actions/checkout@v4
 
     - name: Install Build Dependencies
@@ -24,15 +24,19 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch
 
-    - name: Extract Linaro GCC 4.7
+    - name: Extract Linaro GCC 4.7 (or use your kernel's toolchain)
       shell: bash
       run: |
-        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
-        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
-        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        # اگر آپ کے repo میں toolchain موجود ہے تو یہاں extract کریں
+        # ورنہ مناسب toolchain install کریں
+        if [ -f gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 ]; then
+          tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+          sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
+          echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+          export PATH=/opt/gcc-4.7/bin:$PATH
+        fi
         echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
-        export PATH=/opt/gcc-4.7/bin:$PATH
-        arm-linux-gnueabihf-gcc --version
+        arm-linux-gnueabihf-gcc --version || echo "Toolchain not found, please check"
 
     - name: Detect Kernel Directory
       shell: bash
@@ -41,115 +45,81 @@ jobs:
           KERNEL_DIR="."
         elif [ -f kernel/Makefile ]; then
           KERNEL_DIR="kernel"
-        elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
-          KERNEL_DIR="kernel/e5885-kernel-3.10"
         else
           echo "Kernel Makefile not found!"; exit 1
         fi
         echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
 
-    - name: Enable ip_set_hash_net in defconfig
+    - name: Apply Device Config from /proc/config.gz
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        DEFCONFIG="arch/arm/configs/hi6932_E5885Ls-93a_defconfig"
-        for opt in \
-          "CONFIG_NETFILTER_ADVANCED=y" \
-          "CONFIG_IP_SET=m" \
-          "CONFIG_IP_SET_MAX=256" \
-          "CONFIG_IP_SET_HASH_NET=m" \
-          "CONFIG_NETFILTER_XT_SET=m"
-        do
-          key="${opt%%=*}"
-          if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
-            sed -i "s|^${key}=.*|${opt}|" "$DEFCONFIG"
-          elif grep -q "^# ${key} is not set" "$DEFCONFIG" 2>/dev/null; then
-            sed -i "s|^# ${key} is not set|${opt}|" "$DEFCONFIG"
-          else
-            echo "$opt" >> "$DEFCONFIG"
-          fi
-        done
+        # اپنے repo میں موجود config.gz یا config فائل استعمال کریں
+        if [ -f ../config.gz ]; then
+          zcat ../config.gz > .config
+        elif [ -f ../config ]; then
+          cp ../config .config
+        else
+          echo "::error::config.gz or config not found in repo root!"
+          exit 1
+        fi
+        # پرانی config کو نئی kernel tree کے مطابق ڈھالیں
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- oldconfig
 
-    - name: Configure E5885 Kernel (ARM)
+    - name: Prepare Kernel for Module Building
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5885Ls-93a_defconfig
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Build ONLY ip_set_hash_net.ko
+    - name: Build unfuck_nfqueue.ko
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        # صرف ایک ہی .o بنائیں
+        # فرض کریں unfuck_nfqueue کا سورس kernel tree کے اندر drivers/misc/unfuck_nfqueue میں ہے
+        # آپ کو اسے اپنے repo میں اسی جگہ رکھنا ہوگا، یا M= کا راستہ تبدیل کرنا ہوگا
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ \
-          CC=arm-linux-gnueabihf-gcc \
-          net/netfilter/ipset/ip_set_hash_net.o 2>&1 | tee /tmp/build.log
+          M=drivers/misc/unfuck_nfqueue modules 2>&1 | tee /tmp/build.log
 
-        # پھر اسے ماڈیول میں بند کریں
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ \
-          CC=arm-linux-gnueabihf-gcc \
-          M=net/netfilter/ipset CONFIG_IP_SET_HASH_NET=m modules 2>&1 | tee -a /tmp/build.log
-
-    - name: Verify + Strip ip_set_hash_net.ko
+    - name: Verify + Strip unfuck_nfqueue.ko
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        KO="net/netfilter/ipset/ip_set_hash_net.ko"
+        KO="drivers/misc/unfuck_nfqueue/unfuck_nfqueue.ko"
 
         if [ ! -f "$KO" ]; then
-          echo "::error::ERROR: ip_set_hash_net.ko NOT built!"
-          echo "=== ipset dir contents ==="
-          ls -la net/netfilter/ipset/ || true
+          echo "::error::ERROR: unfuck_nfqueue.ko NOT built!"
           exit 1
         fi
         echo "OK: $KO built"
         ls -la "$KO"
         file "$KO"
 
-        # سائز چیک: اگر 0 یا بہت چھوٹا ہو تو truncated کا خطرہ
-        SIZE=$(stat -c%s "$KO")
-        echo "Size: $SIZE bytes"
-        if [ "$SIZE" -lt 4096 ]; then
-          echo "::error::ERROR: file too small, likely truncated!"
-          exit 1
-        fi
-
         mkdir -p "$GITHUB_WORKSPACE/out"
         arm-linux-gnueabihf-strip --strip-unneeded "$KO"
         cp "$KO" "$GITHUB_WORKSPACE/out/"
-        file "$GITHUB_WORKSPACE/out/ip_set_hash_net.ko"
-        modinfo "$GITHUB_WORKSPACE/out/ip_set_hash_net.ko" 2>/dev/null | grep vermagic || true
+        file "$GITHUB_WORKSPACE/out/unfuck_nfqueue.ko"
+        modinfo "$GITHUB_WORKSPACE/out/unfuck_nfqueue.ko" 2>/dev/null | grep vermagic || true
 
-        # checksum تاکہ ڈیوائس پر منتقلی کے بعد تصدیق ہو سکے
-        sha256sum "$GITHUB_WORKSPACE/out/ip_set_hash_net.ko" | tee "$GITHUB_WORKSPACE/out/ip_set_hash_net.ko.sha256"
+        sha256sum "$GITHUB_WORKSPACE/out/unfuck_nfqueue.ko" | tee "$GITHUB_WORKSPACE/out/unfuck_nfqueue.ko.sha256"
 
     - name: Create Release
       if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
-        name: ip_set_hash_net E5885 ${{ github.event.inputs.version }}
+        name: unfuck_nfqueue B525 ${{ github.event.inputs.version }}
         overwrite_files: true
         files: |
-          out/ip_set_hash_net.ko
-          out/ip_set_hash_net.ko.sha256
+          out/unfuck_nfqueue.ko
+          out/unfuck_nfqueue.ko.sha256
         body: |
-          `ip_set_hash_net.ko` for Huawei E5885 (kernel 3.10, ARMv7).
+          `unfuck_nfqueue.ko` for Huawei B525 (kernel 3.10.100, ARMv7).
 
           **Install:**
           ```sh
-          # پہلے dependencies لوڈ کریں (اگر پہلے سے نہیں ہیں)
-          insmod /system/modules/ip_set.ko
-          insmod /system/modules/ip_set_hash_net.ko
-          ```
-
-          **Checksum verify (truncated error سے بچنے کے لیے):**
-          ```sh
-          sha256sum -c ip_set_hash_net.ko.sha256
-          ```
-          اگر checksum میچ نہ ہو تو فائل دوبارہ منتقل کریں۔
+          insmod /system/modules/unfuck_nfqueue.ko
