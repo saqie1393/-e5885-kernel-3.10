@@ -235,7 +235,7 @@ jobs:
         make -j$(nproc)
         make install
 
-    - name: Build ipset userspace binary (static ARMv7)
+    - name: Build ipset userspace binary (static ARMv7, ipset 6.38)
       shell: bash
       run: |
         MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
@@ -248,10 +248,12 @@ jobs:
         export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -fno-pie -I/tmp/libmnl-install/include"
         export LDFLAGS="-static -s -Wl,-no-pie -L/tmp/libmnl-install/lib"
 
-        wget -q https://www.netfilter.org/pub/ipset/ipset-7.10.tar.bz2 -O /tmp/ipset-7.10.tar.bz2
-        tar -xjf /tmp/ipset-7.10.tar.bz2 -C /tmp/
-        cd /tmp/ipset-7.10
+        # ipset 6.38 official source (netfilter.org)
+        wget -q https://www.netfilter.org/pub/ipset/ipset-6.38.tar.bz2 -O /tmp/ipset-6.38.tar.bz2
+        tar -xjf /tmp/ipset-6.38.tar.bz2 -C /tmp/
+        cd /tmp/ipset-6.38
 
+        # musl fix: basename() needs libgen.h
         sed -i '1s/^/#include <libgen.h>\n/' src/ipset.c
 
         ./configure \
@@ -263,8 +265,8 @@ jobs:
 
         make -j$(nproc) 2>&1 | tee /tmp/ipset-build.log
 
-        # Static link bypassing libtool
-        cd /tmp/ipset-7.10/src
+        # Static link bypassing libtool (6.38 has src/ui.c)
+        cd /tmp/ipset-6.38/src
         armv7l-linux-musleabihf-gcc \
           -static -s -Wl,-no-pie \
           -o /tmp/ipset-static \
