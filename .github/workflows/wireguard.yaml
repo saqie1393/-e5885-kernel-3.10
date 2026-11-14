@@ -65,48 +65,54 @@ jobs:
         git clone --depth 1 https://git.zx2c4.com/wireguard-linux-compat ../wireguard-kmod
         rm -rf drivers/net/wireguard
         ln -s "$(realpath ../wireguard-kmod/src)" drivers/net/wireguard
-    - name: Patch WireGuard compat for 3.10 (read_cpuid_part) — recursive
+    - name: Patch WireGuard for E5885 3.10 (read_cpuid_part)
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        ZINC_DIR="drivers/net/wireguard/crypto/zinc"
+        WG_DIR="drivers/net/wireguard"
 
-        echo "=== Files before patch that still reference read_cpuid_part ==="
-        grep -rln "read_cpuid_part" "$ZINC_DIR" || echo "(none)"
+        echo "=== BEFORE: all occurrences in the whole wireguard tree ==="
+        grep -rn "read_cpuid_part" "$WG_DIR" || echo "(none)"
 
-        echo "=== Rewriting ALL occurrences of read_cpuid_part(...) → read_cpuid_part_number() ==="
-        FILES=$(grep -rln "read_cpuid_part" "$ZINC_DIR" || true)
+        echo ""
+        echo "=== STEP 1: Kill the bad macro definitions in compat headers ==="
+        for h in \
+          "$WG_DIR/compat/compat.h" \
+          "$WG_DIR/compat/compat-asm.h" ; do
+          if [ -f "$h" ]; then
+            # Remove any '#define read_cpuid_part(...)' (with or without args)
+            sed -i -E '/^[[:space:]]*#define[[:space:]]+read_cpuid_part([[:space:](]|$)/d' "$h"
+            echo "✅ Removed #define read_cpuid_part* from $h"
+          fi
+        done
+
+        echo ""
+        echo "=== STEP 2: Replace remaining call sites everywhere under $WG_DIR ==="
+        FILES=$(grep -rln "read_cpuid_part" "$WG_DIR" 2>/dev/null || true)
         for f in $FILES; do
-          # Replace bare `read_cpuid_part()` first (avoid double-suffixing)
-          sed -i 's/read_cpuid_part()/read_cpuid_part_number()/g' "$f"
-          # Replace any `read_cpuid_part(anything)` form
+          # Skip compat headers we just cleaned — re-check in case sed left something
+          if [ "$(basename "$f")" = "compat.h" ] || [ "$(basename "$f")" = "compat-asm.h" ]; then
+            :
+          fi
+          # Order matters: replace argument-form first, then bare form
           sed -i -E 's/read_cpuid_part[[:space:]]*\([^)]*\)/read_cpuid_part_number()/g' "$f"
-          # Catch the bare macro (no parentheses) used as a token
-          sed -i -E 's/(^|[^_a-zA-Z])read_cpuid_part([^_a-zA-Z]|$)/\1read_cpuid_part_number\2/g' "$f"
+          sed -i -E 's/(^|[^_a-zA-Z0-9])read_cpuid_part([^_a-zA-Z0-9]|$)/\1read_cpuid_part_number\2/g' "$f"
           echo "✅ Patched $f"
         done
 
-        echo "=== Files AFTER patch still containing read_cpuid_part (should be empty) ==="
-        grep -rn "read_cpuid_part" "$ZINC_DIR" | grep -v "read_cpuid_part_number" || echo "✅ no raw read_cpuid_part left"
+        echo ""
+        echo "=== AFTER: remaining raw read_cpuid_part (should be none) ==="
+        grep -rn "read_cpuid_part" "$WG_DIR" | grep -v "read_cpuid_part_number" || echo "✅ clean"
 
-    - name: Silence deprecated-declaration warnings (won't fail the build)
+    - name: Silence deprecation warning in module Makefile
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        # Add -Wno-deprecated-declarations to the module's Makefile flags so
-        # read_cpuid_part_number() deprecation warning does not become noise.
         MOD_MAKE="drivers/net/wireguard/Makefile"
         if [ -f "$MOD_MAKE" ] && ! grep -q "Wno-deprecated-declarations" "$MOD_MAKE"; then
           echo "ccflags-y += -Wno-deprecated-declarations" >> "$MOD_MAKE"
           echo "✅ Added -Wno-deprecated-declarations to $MOD_MAKE"
         fi
-    - name: Debug — find exact offender
-      shell: bash
-      run: |
-        cd "$KERNEL_DIR"
-        grep -rn "read_cpuid_part" drivers/net/wireguard/ | grep -v "read_cpuid_part_number" || echo "none"
-        echo "=== also check the kernel header ==="
-        sed -n '125,145p' arch/arm/include/asm/cputype.h
     
     
     - name: Build WireGuard Kernel Module
