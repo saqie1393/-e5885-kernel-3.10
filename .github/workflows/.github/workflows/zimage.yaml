@@ -1,0 +1,205 @@
+name: Build E5885 kernel with netfilter built-in
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version'
+        required: true
+        default: 'v1.0.0-builtin'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout E5885 Kernel
+      uses: actions/checkout@v4
+
+    - name: Install Build Dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget xz-utils
+
+    - name: Extract Linaro GCC 4.7
+      shell: bash
+      run: |
+        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
+        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        arm-linux-gnueabihf-gcc --version
+
+    - name: Detect Kernel Directory
+      shell: bash
+      run: |
+        if [ -f Makefile ] && grep -q "mrproper" Makefile; then
+          KERNEL_DIR="."
+        elif [ -f kernel/Makefile ]; then
+          KERNEL_DIR="kernel"
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
+          KERNEL_DIR="kernel/e5885-kernel-3.10"
+        else
+          echo "Kernel Makefile not found!"; exit 1
+        fi
+        echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+
+    - name: Enable netfilter as BUILT-IN (=y) in defconfig
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        DEFCONFIG="arch/arm/configs/hi6932_E5885Ls-93a_defconfig"
+
+        # IMPORTANT: All options as =y (built-in)
+        # This means they live inside zImage — no .ko files, no insmod needed.
+        for opt in \
+          "CONFIG_NETFILTER_ADVANCED=y" \
+          "CONFIG_NETFILTER_TPROXY=y" \
+          "CONFIG_NETFILTER_XT_TARGET_TPROXY=y" \
+          "CONFIG_NETFILTER_XT_MATCH_SOCKET=y" \
+          "CONFIG_NF_DEFRAG_IPV4=y" \
+          "CONFIG_NETFILTER_XT_TARGET_MARK=y" \
+          "CONFIG_NETFILTER_XT_MATCH_MARK=y" \
+          "CONFIG_IP_NF_MANGLE=y" \
+          "CONFIG_NF_CONNTRACK=y" \
+          "CONFIG_NF_CONNTRACK_IPV4=y" \
+          "CONFIG_NF_NAT=y" \
+          "CONFIG_NETFILTER_NETLINK=y" \
+          "CONFIG_NETFILTER_NETLINK_QUEUE=y" \
+          "CONFIG_NETFILTER_XT_TARGET_NFQUEUE=y" \
+          "CONFIG_NETFILTER_XT_MATCH_CONNBYTES=y" \
+          "CONFIG_NETFILTER_XT_MATCH_STATE=y" \
+          "CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y" \
+          "CONFIG_IP_SET=y" \
+          "CONFIG_IP_SET_MAX=256" \
+          "CONFIG_IP_SET_BITMAP_IP=y" \
+          "CONFIG_IP_SET_BITMAP_IPMAC=y" \
+          "CONFIG_IP_SET_BITMAP_PORT=y" \
+          "CONFIG_IP_SET_HASH_IP=y" \
+          "CONFIG_IP_SET_HASH_IPMARK=y" \
+          "CONFIG_IP_SET_HASH_IPPORT=y" \
+          "CONFIG_IP_SET_HASH_IPPORTIP=y" \
+          "CONFIG_IP_SET_HASH_IPPORTNET=y" \
+          "CONFIG_IP_SET_HASH_NET=y" \
+          "CONFIG_IP_SET_HASH_NETNET=y" \
+          "CONFIG_IP_SET_HASH_NETPORT=y" \
+          "CONFIG_IP_SET_HASH_MAC=y" \
+          "CONFIG_IP_SET_LIST_SET=y" \
+          "CONFIG_NETFILTER_XT_SET=y" \
+          "CONFIG_NETFILTER_XT_TARGET_REDIRECT=y" \
+          "CONFIG_NETFILTER_XT_TARGET_NETMAP=y" \
+          "CONFIG_IP_NF_TARGET_REDIRECT=y" \
+          "CONFIG_IP_NF_TARGET_NETMAP=y"
+        do
+          key="${opt%%=*}"
+          if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^${key}=.*|${opt}|" "$DEFCONFIG"
+          elif grep -q "^# ${key} is not set" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^# ${key} is not set|${opt}|" "$DEFCONFIG"
+          else
+            echo "$opt" >> "$DEFCONFIG"
+          fi
+        done
+
+        echo "===== Relevant defconfig lines (all should be =y) ====="
+        grep -E "TPROXY|MATCH_SOCKET|TARGET_NFQUEUE|MATCH_CONNBYTES|CONNTRACK|IP_SET|DEFRAG" "$DEFCONFIG" || true
+
+    - name: Configure Kernel (ARM)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5885Ls-93a_defconfig
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
+
+    - name: Verify built-in (.config)
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        echo "===== .config netfilter (must be =y, NOT =m) ====="
+        grep -E "CONFIG_NETFILTER_XT_TARGET_TPROXY|CONFIG_NETFILTER_XT_MATCH_SOCKET|CONFIG_NETFILTER_XT_TARGET_NFQUEUE|CONFIG_NETFILTER_XT_MATCH_CONNBYTES|CONFIG_NF_CONNTRACK=|CONFIG_IP_SET=|CONFIG_NETFILTER_NETLINK=|CONFIG_NETFILTER_NETLINK_QUEUE=" .config || true
+
+        # Fail if TPROXY is =m instead of =y
+        if grep -q "^CONFIG_NETFILTER_XT_TARGET_TPROXY=m" .config; then
+          echo "::error::CONFIG_NETFILTER_XT_TARGET_TPROXY is still =m — wanted =y"
+          exit 1
+        fi
+        if ! grep -q "^CONFIG_NETFILTER_XT_TARGET_TPROXY=y" .config; then
+          echo "::error::CONFIG_NETFILTER_XT_TARGET_TPROXY is NOT =y"
+          exit 1
+        fi
+        if ! grep -q "^CONFIG_NETFILTER_XT_MATCH_SOCKET=y" .config; then
+          echo "::error::CONFIG_NETFILTER_XT_MATCH_SOCKET is NOT =y"
+          exit 1
+        fi
+        if ! grep -q "^CONFIG_IP_SET=y" .config; then
+          echo "::error::CONFIG_IP_SET is NOT =y"
+          exit 1
+        fi
+
+    - name: Build full kernel (zImage)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        # This builds kernel + all built-in modules together (takes 10-30 min)
+        make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+          HOSTCFLAGS=-fcommon LOCALVERSION=+ \
+          CC=arm-linux-gnueabihf-gcc \
+          zImage 2>&1 | tee /tmp/kernel-build.log
+
+    - name: Locate zImage
+      if: success()
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        echo "=== Kernel image ==="
+        find arch/arm/boot -maxdepth 2 -type f \( -name 'zImage' -o -name 'Image' \) -exec ls -la {} \;
+        ZIMAGE=$(find arch/arm/boot -maxdepth 2 -type f -name 'zImage' | head -1)
+        if [ -z "$ZIMAGE" ]; then
+          echo "::error::zImage NOT built!"
+          exit 1
+        fi
+        cp "$ZIMAGE" "$GITHUB_WORKSPACE/zImage"
+        file "$GITHUB_WORKSPACE/zImage"
+        ls -la "$GITHUB_WORKSPACE/zImage"
+
+    - name: Show kernel build warnings/errors
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Warnings/errors ==="
+        grep -iE "warning|error" /tmp/kernel-build.log | tail -n 100 || echo "None"
+
+    - name: Create Release
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.version }}
+        name: E5885 Kernel (netfilter built-in) ${{ github.event.inputs.version }}
+        overwrite_files: true
+        files: |
+          zImage
+        body: |
+          E5885 Kernel with netfilter/TPROXY/ipset/conntrack/NFQUEUE **built-in (=y)**
+
+          **Contents:**
+          - `zImage` — Kernel image with all requested modules baked in
+
+          **Important:**
+          - This is NOT boot.img. If you need boot.img, you must wrap this zImage with:
+            - ramdisk (initrd)
+            - boot header (Huawei-specific)
+            - signing (if bootloader verifies)
+          - **No `.ko` files** are needed anymore. Everything is inside the kernel.
+          - Use `ipset`, `iptables -t mangle -j TPROXY`, `iptables -m socket`, `iptables -j NFQUEUE`, `iptables -m connbytes` directly after boot — no insmod required.
+
+          **Verify on device:**
+          ```sh
+          uname -a
+          iptables -t mangle -A PREROUTING -p tcp --dport 80 -j TPROXY --on-port 1080
+          ipset create test hash:ip
