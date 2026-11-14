@@ -100,6 +100,15 @@ jobs:
           echo "ccflags-y += -Wno-deprecated-declarations" >> "$MOD_MAKE"
           echo "✅ Added -Wno-deprecated-declarations to $MOD_MAKE"
         fi
+    - name: Debug — find exact offender
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        grep -rn "read_cpuid_part" drivers/net/wireguard/ | grep -v "read_cpuid_part_number" || echo "none"
+        echo "=== also check the kernel header ==="
+        sed -n '125,145p' arch/arm/include/asm/cputype.h
+    
+    
     - name: Build WireGuard Kernel Module
       shell: bash
       run: |
