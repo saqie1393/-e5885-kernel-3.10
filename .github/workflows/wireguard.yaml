@@ -119,22 +119,19 @@ jobs:
       run: |
         cd "$KERNEL_DIR"
         COMPAT_H="drivers/net/wireguard/compat/compat.h"
-        if [ -f "$COMPAT_H" ]; then
-          if ! grep -q "define fallthrough" "$COMPAT_H"; then
-            cat >> "$COMPAT_H" <<'EOF'
-
-         /* E5885 kernel 3.10 compatibility: fallthrough macro does not exist here */
-         #ifndef fallthrough
-         #define fallthrough do { } while (0)
-         #endif
-         EOF
-            echo "✅ Added fallthrough compat to $COMPAT_H"
-          else
-            echo "ℹ️ fallthrough already defined in $COMPAT_H"
-          fi
-        else
+        if [ ! -f "$COMPAT_H" ]; then
           echo "⚠️ compat.h not found at $COMPAT_H"
+          exit 0
         fi
+        if grep -q "define fallthrough" "$COMPAT_H"; then
+          echo "ℹ️ fallthrough already defined"
+        else
+          printf '\n/* E5885 3.10 compat: fallthrough */\n#ifndef fallthrough\n#define fallthrough do { } while (0)\n#endif\n' >> "$COMPAT_H"
+          echo "✅ Added fallthrough compat to $COMPAT_H"
+        fi
+        echo "--- last 10 lines of compat.h ---"
+        tail -n 10 "$COMPAT_H"
+    
     - name: Build WireGuard Kernel Module
       shell: bash
       run: |
