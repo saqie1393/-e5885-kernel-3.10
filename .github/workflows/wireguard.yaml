@@ -61,10 +61,11 @@ jobs:
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        # WireGuard 3.10–5.5 کے لیے آفیشل backport استعمال کریں
+        # Use the official WireGuard backport for kernels 3.10–5.5
         git clone --depth 1 https://git.zx2c4.com/wireguard-linux-compat ../wireguard-kmod
         rm -rf drivers/net/wireguard
         ln -s "$(realpath ../wireguard-kmod/src)" drivers/net/wireguard
+
     - name: Patch WireGuard for E5885 3.10 (read_cpuid_part)
       shell: bash
       run: |
@@ -75,14 +76,14 @@ jobs:
         grep -rn "read_cpuid_part" "$WG_DIR" || echo "(none)"
 
         echo ""
-        echo "=== STEP 1: Kill the bad macro definitions in compat headers ==="
+        echo "=== STEP 1: Remove the bad macro definitions in compat headers ==="
         for h in \
           "$WG_DIR/compat/compat.h" \
           "$WG_DIR/compat/compat-asm.h" ; do
           if [ -f "$h" ]; then
             # Remove any '#define read_cpuid_part(...)' (with or without args)
             sed -i -E '/^[[:space:]]*#define[[:space:]]+read_cpuid_part([[:space:](]|$)/d' "$h"
-            echo "✅ Removed #define read_cpuid_part* from $h"
+            echo "Removed #define read_cpuid_part* from $h"
           fi
         done
 
@@ -90,19 +91,15 @@ jobs:
         echo "=== STEP 2: Replace remaining call sites everywhere under $WG_DIR ==="
         FILES=$(grep -rln "read_cpuid_part" "$WG_DIR" 2>/dev/null || true)
         for f in $FILES; do
-          # Skip compat headers we just cleaned — re-check in case sed left something
-          if [ "$(basename "$f")" = "compat.h" ] || [ "$(basename "$f")" = "compat-asm.h" ]; then
-            :
-          fi
-          # Order matters: replace argument-form first, then bare form
+          # Order matters: replace argument form first, then the bare form
           sed -i -E 's/read_cpuid_part[[:space:]]*\([^)]*\)/read_cpuid_part_number()/g' "$f"
           sed -i -E 's/(^|[^_a-zA-Z0-9])read_cpuid_part([^_a-zA-Z0-9]|$)/\1read_cpuid_part_number\2/g' "$f"
-          echo "✅ Patched $f"
+          echo "Patched $f"
         done
 
         echo ""
         echo "=== AFTER: remaining raw read_cpuid_part (should be none) ==="
-        grep -rn "read_cpuid_part" "$WG_DIR" | grep -v "read_cpuid_part_number" || echo "✅ clean"
+        grep -rn "read_cpuid_part" "$WG_DIR" | grep -v "read_cpuid_part_number" || echo "clean"
 
     - name: Silence deprecation warning in module Makefile
       shell: bash
@@ -111,27 +108,27 @@ jobs:
         MOD_MAKE="drivers/net/wireguard/Makefile"
         if [ -f "$MOD_MAKE" ] && ! grep -q "Wno-deprecated-declarations" "$MOD_MAKE"; then
           echo "ccflags-y += -Wno-deprecated-declarations" >> "$MOD_MAKE"
-          echo "✅ Added -Wno-deprecated-declarations to $MOD_MAKE"
+          echo "Added -Wno-deprecated-declarations to $MOD_MAKE"
         fi
-    
+
     - name: Add fallthrough compat for kernel 3.10
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         COMPAT_H="drivers/net/wireguard/compat/compat.h"
         if [ ! -f "$COMPAT_H" ]; then
-          echo "⚠️ compat.h not found at $COMPAT_H"
+          echo "compat.h not found at $COMPAT_H"
           exit 0
         fi
         if grep -q "define fallthrough" "$COMPAT_H"; then
-          echo "ℹ️ fallthrough already defined"
+          echo "fallthrough already defined"
         else
           printf '\n/* E5885 3.10 compat: fallthrough */\n#ifndef fallthrough\n#define fallthrough do { } while (0)\n#endif\n' >> "$COMPAT_H"
-          echo "✅ Added fallthrough compat to $COMPAT_H"
+          echo "Added fallthrough compat to $COMPAT_H"
         fi
         echo "--- last 10 lines of compat.h ---"
         tail -n 10 "$COMPAT_H"
-    
+
     - name: Build WireGuard Kernel Module
       shell: bash
       run: |
@@ -172,7 +169,7 @@ jobs:
         armv7l-linux-musleabihf-gcc --version
 
         echo "=== Cloning wireguard-tools ==="
-        # آفیشل WireGuard tools ریپو
+        # Official WireGuard tools repo
         git clone --depth 1 https://git.zx2c4.com/wireguard-tools "../$TOOLS_DIR"
         cd "../$TOOLS_DIR/src"
 
@@ -223,7 +220,7 @@ jobs:
         echo "Size (human readable): $(du -h "$WG_BIN" | cut -f1)"
         echo "Size (bytes): $(stat -c %s "$WG_BIN")"
         echo "=========================================="
-        echo "✅ If size is reasonable, musl static build worked correctly."
+        echo "If size is reasonable, the musl static build worked correctly."
         echo "=========================================="
 
     - name: Show Tools Build Log Summary
@@ -279,7 +276,7 @@ jobs:
           /tmp/tools-build.log
         if-no-files-found: warn
 
-    - name: Create Tag (Release ke liye zaroori)
+    - name: Create Tag (required for Release)
       if: success()
       shell: bash
       run: |
@@ -294,7 +291,7 @@ jobs:
       with:
         tag_name: ${{ github.event.inputs.version }}
         name: WireGuard E5885 ${{ github.event.inputs.version }}
-        overwrite: true
+        overwrite_files: true
         files: |
           wireguard.ko
           wg-tools-armv7.tar.gz
