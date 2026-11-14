@@ -114,7 +114,27 @@ jobs:
           echo "✅ Added -Wno-deprecated-declarations to $MOD_MAKE"
         fi
     
-    
+    - name: Add fallthrough compat for kernel 3.10
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        COMPAT_H="drivers/net/wireguard/compat/compat.h"
+        if [ -f "$COMPAT_H" ]; then
+          if ! grep -q "define fallthrough" "$COMPAT_H"; then
+            cat >> "$COMPAT_H" <<'EOF'
+
+         /* E5885 kernel 3.10 compatibility: fallthrough macro does not exist here */
+         #ifndef fallthrough
+         #define fallthrough do { } while (0)
+         #endif
+         EOF
+            echo "✅ Added fallthrough compat to $COMPAT_H"
+          else
+            echo "ℹ️ fallthrough already defined in $COMPAT_H"
+          fi
+        else
+          echo "⚠️ compat.h not found at $COMPAT_H"
+        fi
     - name: Build WireGuard Kernel Module
       shell: bash
       run: |
