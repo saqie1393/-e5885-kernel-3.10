@@ -1,4 +1,4 @@
-name: Build unfuck_nfqueue for B525
+name: Build TPROXY + ipset + extra modules for E5885
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       version:
         description: 'Release Version'
         required: true
-        default: 'v1.0.0-unfuck-nfqueue'
+        default: 'v1.0.0-netfilter'
 
 jobs:
   build:
@@ -15,28 +15,24 @@ jobs:
       contents: write
 
     steps:
-    - name: Checkout Kernel Source
+    - name: Checkout E5885 Kernel
       uses: actions/checkout@v4
 
     - name: Install Build Dependencies
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget xz-utils
 
-    - name: Extract Linaro GCC 4.7 (or use your kernel's toolchain)
+    - name: Extract Linaro GCC 4.7
       shell: bash
       run: |
-        # اگر آپ کے repo میں toolchain موجود ہے تو یہاں extract کریں
-        # ورنہ مناسب toolchain install کریں
-        if [ -f gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 ]; then
-          tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
-          sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
-          echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
-          export PATH=/opt/gcc-4.7/bin:$PATH
-        fi
+        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
+        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
         echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
-        arm-linux-gnueabihf-gcc --version || echo "Toolchain not found, please check"
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        arm-linux-gnueabihf-gcc --version
 
     - name: Detect Kernel Directory
       shell: bash
@@ -45,81 +41,275 @@ jobs:
           KERNEL_DIR="."
         elif [ -f kernel/Makefile ]; then
           KERNEL_DIR="kernel"
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
+          KERNEL_DIR="kernel/e5885-kernel-3.10"
         else
           echo "Kernel Makefile not found!"; exit 1
         fi
         echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
 
-    - name: Apply Device Config from /proc/config.gz
+    - name: Enable TPROXY + ipset + extra modules in defconfig
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        # اپنے repo میں موجود config.gz یا config فائل استعمال کریں
-        if [ -f ../config.gz ]; then
-          zcat ../config.gz > .config
-        elif [ -f ../config ]; then
-          cp ../config .config
-        else
-          echo "::error::config.gz or config not found in repo root!"
-          exit 1
-        fi
-        # پرانی config کو نئی kernel tree کے مطابق ڈھالیں
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- oldconfig
+        DEFCONFIG="arch/arm/configs/hi6932_E5885Ls-93a_defconfig"
 
-    - name: Prepare Kernel for Module Building
+        # Core netfilter options
+        # TPROXY needs NETFILTER_TPROXY and NF_DEFRAG_IPV4 [citation:1][citation:6]
+        # xt_socket needs NF_CONNTRACK
+        # xt_NFQUEUE needs NETFILTER_NETLINK_QUEUE
+        # xt_connbytes needs NF_CONNTRACK
+        for opt in \
+          "CONFIG_NETFILTER_ADVANCED=y" \
+          "CONFIG_NETFILTER_TPROXY=m" \
+          "CONFIG_NETFILTER_XT_TARGET_TPROXY=m" \
+          "CONFIG_NETFILTER_XT_MATCH_SOCKET=m" \
+          "CONFIG_NF_DEFRAG_IPV4=y" \
+          "CONFIG_NETFILTER_XT_TARGET_MARK=m" \
+          "CONFIG_NETFILTER_XT_MATCH_MARK=m" \
+          "CONFIG_IP_NF_MANGLE=m" \
+          "CONFIG_NF_CONNTRACK=m" \
+          "CONFIG_NF_CONNTRACK_IPV4=m" \
+          "CONFIG_NF_NAT=m" \
+          "CONFIG_NETFILTER_NETLINK=m" \
+          "CONFIG_NETFILTER_NETLINK_QUEUE=m" \
+          "CONFIG_NETFILTER_XT_TARGET_NFQUEUE=m" \
+          "CONFIG_NETFILTER_XT_MATCH_CONNBYTES=m" \
+          "CONFIG_NETFILTER_XT_MATCH_STATE=m" \
+          "CONFIG_IP_SET=m" \
+          "CONFIG_IP_SET_MAX=256" \
+          "CONFIG_IP_SET_BITMAP_IP=m" \
+          "CONFIG_IP_SET_BITMAP_IPMAC=m" \
+          "CONFIG_IP_SET_BITMAP_PORT=m" \
+          "CONFIG_IP_SET_HASH_IP=m" \
+          "CONFIG_IP_SET_HASH_IPMARK=m" \
+          "CONFIG_IP_SET_HASH_IPPORT=m" \
+          "CONFIG_IP_SET_HASH_IPPORTIP=m" \
+          "CONFIG_IP_SET_HASH_IPPORTNET=m" \
+          "CONFIG_IP_SET_HASH_NET=m" \
+          "CONFIG_IP_SET_HASH_NETNET=m" \
+          "CONFIG_IP_SET_HASH_NETPORT=m" \
+          "CONFIG_IP_SET_HASH_MAC=m" \
+          "CONFIG_IP_SET_LIST_SET=m" \
+          "CONFIG_NETFILTER_XT_SET=m"
+        do
+          key="${opt%%=*}"
+          if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^${key}=.*|${opt}|" "$DEFCONFIG"
+          elif grep -q "^# ${key} is not set" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^# ${key} is not set|${opt}|" "$DEFCONFIG"
+          else
+            echo "$opt" >> "$DEFCONFIG"
+          fi
+        done
+
+        echo "===== Relevant lines in defconfig ====="
+        grep -E "TPROXY|XT_MATCH_SOCKET|XT_TARGET_NFQUEUE|XT_MATCH_CONNBYTES|NF_CONNTRACK|IP_SET|NF_DEFRAG" "$DEFCONFIG" || true
+
+    - name: Configure Kernel (ARM)
       shell: bash
       run: |
         export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5885Ls-93a_defconfig
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Build unfuck_nfqueue.ko
+    - name: Verify key options in .config
       shell: bash
       run: |
-        export PATH=/opt/gcc-4.7/bin:$PATH
         cd "$KERNEL_DIR"
-        # فرض کریں unfuck_nfqueue کا سورس kernel tree کے اندر drivers/misc/unfuck_nfqueue میں ہے
-        # آپ کو اسے اپنے repo میں اسی جگہ رکھنا ہوگا، یا M= کا راستہ تبدیل کرنا ہوگا
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ \
-          M=drivers/misc/unfuck_nfqueue modules 2>&1 | tee /tmp/build.log
-
-    - name: Verify + Strip unfuck_nfqueue.ko
-      shell: bash
-      run: |
-        export PATH=/opt/gcc-4.7/bin:$PATH
-        cd "$KERNEL_DIR"
-        KO="drivers/misc/unfuck_nfqueue/unfuck_nfqueue.ko"
-
-        if [ ! -f "$KO" ]; then
-          echo "::error::ERROR: unfuck_nfqueue.ko NOT built!"
+        echo "===== .config key lines ====="
+        grep -E "CONFIG_NETFILTER_XT_TARGET_TPROXY|CONFIG_NETFILTER_XT_MATCH_SOCKET|CONFIG_NETFILTER_XT_TARGET_NFQUEUE|CONFIG_NETFILTER_XT_MATCH_CONNBYTES|CONFIG_NF_CONNTRACK=|CONFIG_IP_SET=|CONFIG_NETFILTER_NETLINK=" .config || true
+        if ! grep -q "^CONFIG_NETFILTER_XT_TARGET_TPROXY=m" .config; then
+          echo "::error::CONFIG_NETFILTER_XT_TARGET_TPROXY is NOT enabled"
           exit 1
         fi
-        echo "OK: $KO built"
-        ls -la "$KO"
-        file "$KO"
+        if ! grep -q "^CONFIG_NETFILTER_XT_MATCH_SOCKET=m" .config; then
+          echo "::error::CONFIG_NETFILTER_XT_MATCH_SOCKET is NOT enabled"
+          exit 1
+        fi
 
-        mkdir -p "$GITHUB_WORKSPACE/out"
-        arm-linux-gnueabihf-strip --strip-unneeded "$KO"
-        cp "$KO" "$GITHUB_WORKSPACE/out/"
-        file "$GITHUB_WORKSPACE/out/unfuck_nfqueue.ko"
-        modinfo "$GITHUB_WORKSPACE/out/unfuck_nfqueue.ko" 2>/dev/null | grep vermagic || true
+    - name: Build netfilter + ipset modules
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        # Build all netfilter modules (includes TPROXY, socket, NFQUEUE, connbytes, etc.)
+        make -C . M=net/netfilter ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee /tmp/netfilter-build.log
+        # Build ipset modules
+        make -C . M=net/netfilter/ipset ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc modules 2>&1 | tee -a /tmp/netfilter-build.log
 
-        sha256sum "$GITHUB_WORKSPACE/out/unfuck_nfqueue.ko" | tee "$GITHUB_WORKSPACE/out/unfuck_nfqueue.ko.sha256"
+    - name: Collect and verify kernel modules
+      if: success()
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        mkdir -p "$GITHUB_WORKSPACE/modules-out"
+
+        # TPROXY related
+        cp net/netfilter/xt_TPROXY.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "xt_TPROXY.ko not found"
+        cp net/netfilter/xt_socket.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "xt_socket.ko not found"
+        cp net/netfilter/xt_mark.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || true
+        cp net/netfilter/nf_tproxy_core.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || true
+        find net/ipv4/netfilter -name "*defrag*.ko" -exec cp {} "$GITHUB_WORKSPACE/modules-out/" \; 2>/dev/null || true
+
+        # Extra modules requested
+        cp net/netfilter/nfnetlink.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "nfnetlink.ko not found"
+        cp net/netfilter/nf_conntrack.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "nf_conntrack.ko not found"
+        cp net/netfilter/nfnetlink_queue.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "nfnetlink_queue.ko not found"
+        cp net/netfilter/xt_NFQUEUE.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "xt_NFQUEUE.ko not found"
+        cp net/netfilter/xt_connbytes.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "xt_connbytes.ko not found"
+
+        # ipset modules
+        find net/netfilter -name "ip_set*.ko" -exec cp {} "$GITHUB_WORKSPACE/modules-out/" \; 2>/dev/null || true
+        cp net/netfilter/xt_set.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || true
+
+        # Verify required modules exist
+        MISSING=0
+        for m in xt_TPROXY.ko xt_socket.ko nfnetlink.ko nf_conntrack.ko nfnetlink_queue.ko xt_NFQUEUE.ko xt_connbytes.ko; do
+          if [ ! -f "$GITHUB_WORKSPACE/modules-out/$m" ]; then
+            echo "::error::$m was NOT built!"
+            MISSING=1
+          fi
+        done
+        if [ "$MISSING" = "1" ]; then
+          exit 1
+        fi
+
+        # Strip and verify
+        for ko in "$GITHUB_WORKSPACE/modules-out/"*.ko; do
+          arm-linux-gnueabihf-strip --strip-unneeded "$ko" 2>/dev/null || true
+          file "$ko"
+          modinfo "$ko" 2>/dev/null | grep vermagic || true
+        done
+
+        tar -czf "$GITHUB_WORKSPACE/netfilter-modules-armv7.tar.gz" -C "$GITHUB_WORKSPACE/modules-out" .
+
+    - name: Build libmnl for ARMv7 musl (static)
+      shell: bash
+      run: |
+        MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
+        tar -xJf /tmp/musl-cross.tar.xz -C /opt/
+        export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
+        export LDFLAGS="-static -s"
+
+        wget -q https://www.netfilter.org/pub/libmnl/libmnl-1.0.5.tar.bz2 -O /tmp/libmnl-1.0.5.tar.bz2
+        tar -xjf /tmp/libmnl-1.0.5.tar.bz2 -C /tmp/
+        cd /tmp/libmnl-1.0.5
+
+        ./configure \
+          --host=armv7l-linux-musleabihf \
+          --prefix=/tmp/libmnl-install \
+          --enable-static=yes \
+          --enable-shared=no
+
+        make -j$(nproc)
+        make install
+
+    - name: Build ipset userspace binary (static ARMv7)
+      shell: bash
+      run: |
+        MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
+        tar -xJf /tmp/musl-cross.tar.xz -C /opt/
+        export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+
+        export PKG_CONFIG_PATH="/tmp/libmnl-install/lib/pkgconfig:$PKG_CONFIG_PATH"
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -fno-pie -I/tmp/libmnl-install/include"
+        export LDFLAGS="-static -s -Wl,-no-pie -L/tmp/libmnl-install/lib"
+
+        wget -q https://www.netfilter.org/pub/ipset/ipset-7.10.tar.bz2 -O /tmp/ipset-7.10.tar.bz2
+        tar -xjf /tmp/ipset-7.10.tar.bz2 -C /tmp/
+        cd /tmp/ipset-7.10
+
+        sed -i '1s/^/#include <libgen.h>\n/' src/ipset.c
+
+        ./configure \
+          --host=armv7l-linux-musleabihf \
+          --prefix=/usr \
+          --enable-static=yes \
+          --enable-shared=no \
+          --with-kmod=no
+
+        make -j$(nproc) 2>&1 | tee /tmp/ipset-build.log
+
+        # Static link bypassing libtool
+        cd /tmp/ipset-7.10/src
+        armv7l-linux-musleabihf-gcc \
+          -static -s -Wl,-no-pie \
+          -o /tmp/ipset-static \
+          ipset.o ui.o \
+          ../lib/.libs/libipset.a \
+          /tmp/libmnl-install/lib/libmnl.a \
+          -lm
+
+        file /tmp/ipset-static
+        if ! file /tmp/ipset-static | grep -q "statically linked"; then
+          echo "::error::ipset is NOT statically linked!"
+          exit 1
+        fi
+
+    - name: Package artifacts
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p ipset-release
+        cp /tmp/ipset-static ipset-release/ipset
+        chmod +x ipset-release/ipset
+        tar -czf ipset-armv7.tar.gz -C ipset-release .
 
     - name: Create Release
       if: success()
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
-        name: unfuck_nfqueue B525 ${{ github.event.inputs.version }}
+        name: E5885 Netfilter Modules ${{ github.event.inputs.version }}
         overwrite_files: true
         files: |
-          out/unfuck_nfqueue.ko
-          out/unfuck_nfqueue.ko.sha256
+          netfilter-modules-armv7.tar.gz
+          ipset-armv7.tar.gz
         body: |
-          `unfuck_nfqueue.ko` for Huawei B525 (kernel 3.10.100, ARMv7).
+          Netfilter + ipset modules for Huawei E5885 (kernel 3.10)
+
+          **Kernel modules (netfilter-modules-armv7.tar.gz):**
+          - `xt_TPROXY.ko`
+          - `xt_socket.ko`
+          - `nf_tproxy_core.ko` (if built)
+          - `xt_mark.ko`
+          - defrag modules (if built)
+          - `nfnetlink.ko`
+          - `nf_conntrack.ko`
+          - `nfnetlink_queue.ko`
+          - `xt_NFQUEUE.ko`
+          - `xt_connbytes.ko`
+          - `ip_set*.ko`
+          - `xt_set.ko`
+
+          **Userspace (ipset-armv7.tar.gz):**
+          - `ipset` — STATIC ARMv7 binary
 
           **Install:**
           ```sh
-          insmod /system/modules/unfuck_nfqueue.ko
+          tar -xzf netfilter-modules-armv7.tar.gz -C /system/modules/
+          insmod /system/modules/nfnetlink.ko
+          insmod /system/modules/nf_conntrack.ko
+          insmod /system/modules/nfnetlink_queue.ko
+          insmod /system/modules/xt_NFQUEUE.ko
+          insmod /system/modules/xt_connbytes.ko
+          insmod /system/modules/xt_socket.ko
+          insmod /system/modules/xt_TPROXY.ko
+          insmod /system/modules/xt_mark.ko
+          insmod /system/modules/ip_set.ko
+          insmod /system/modules/xt_set.ko
+
+          tar -xzf ipset-armv7.tar.gz -C /usr/bin/
+          chmod +x /usr/bin/ipset
+          ipset --version
