@@ -65,7 +65,17 @@ jobs:
         git clone --depth 1 https://git.zx2c4.com/wireguard-linux-compat ../wireguard-kmod
         rm -rf drivers/net/wireguard
         ln -s "$(realpath ../wireguard-kmod/src)" drivers/net/wireguard
-
+    - name: Patch WireGuard compat for 3.10 (read_cpuid_part)
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        CHACHA_FILE="drivers/net/wireguard/crypto/zinc/chacha20/chacha20-arm-glue.c"
+        if [ -f "$CHACHA_FILE" ]; then
+          sed -i 's/read_cpuid_part()/read_cpuid_part_number()/g' "$CHACHA_FILE"
+          echo "✅ Patched read_cpuid_part -> read_cpuid_part_number"
+        else
+          echo "⚠️ chacha20-arm-glue.c not found, skipping patch"
+        fi
     - name: Build WireGuard Kernel Module
       shell: bash
       run: |
