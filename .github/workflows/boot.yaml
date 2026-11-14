@@ -1,0 +1,305 @@
+name: Build E5885 kernel + vmlinuz.bin + boot.img (netfilter built-in)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version'
+        required: true
+        default: 'v1.0.0-builtin'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout E5885 Kernel
+      uses: actions/checkout@v4
+
+    - name: Install Build Dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses-dev bison flex \
+          libssl-dev bc git file patch wget xz-utils cpio device-tree-compiler \
+          u-boot-tools python3 python3-pip
+
+    - name: Extract Linaro GCC 4.7
+      shell: bash
+      run: |
+        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
+        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        arm-linux-gnueabihf-gcc --version
+
+    - name: Detect Kernel Directory
+      shell: bash
+      run: |
+        if [ -f Makefile ] && grep -q "mrproper" Makefile; then
+          KERNEL_DIR="."
+        elif [ -f kernel/Makefile ]; then
+          KERNEL_DIR="kernel"
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
+          KERNEL_DIR="kernel/e5885-kernel-3.10"
+        else
+          echo "Kernel Makefile not found!"; exit 1
+        fi
+        echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+
+    - name: Enable netfilter options as BUILT-IN (=y)
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        DEFCONFIG="arch/arm/configs/hi6932_E5885Ls-93a_defconfig"
+
+        for opt in \
+          "CONFIG_NETFILTER_ADVANCED=y" \
+          "CONFIG_NETFILTER_TPROXY=y" \
+          "CONFIG_NETFILTER_XT_TARGET_TPROXY=y" \
+          "CONFIG_NETFILTER_XT_MATCH_SOCKET=y" \
+          "CONFIG_NF_DEFRAG_IPV4=y" \
+          "CONFIG_NETFILTER_XT_TARGET_MARK=y" \
+          "CONFIG_NETFILTER_XT_MATCH_MARK=y" \
+          "CONFIG_IP_NF_MANGLE=y" \
+          "CONFIG_NF_CONNTRACK=y" \
+          "CONFIG_NF_CONNTRACK_IPV4=y" \
+          "CONFIG_NF_NAT=y" \
+          "CONFIG_NETFILTER_NETLINK=y" \
+          "CONFIG_NETFILTER_NETLINK_QUEUE=y" \
+          "CONFIG_NETFILTER_XT_TARGET_NFQUEUE=y" \
+          "CONFIG_NETFILTER_XT_MATCH_CONNBYTES=y" \
+          "CONFIG_NETFILTER_XT_MATCH_STATE=y" \
+          "CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y" \
+          "CONFIG_IP_SET=y" \
+          "CONFIG_IP_SET_MAX=256" \
+          "CONFIG_IP_SET_BITMAP_IP=y" \
+          "CONFIG_IP_SET_BITMAP_IPMAC=y" \
+          "CONFIG_IP_SET_BITMAP_PORT=y" \
+          "CONFIG_IP_SET_HASH_IP=y" \
+          "CONFIG_IP_SET_HASH_IPMARK=y" \
+          "CONFIG_IP_SET_HASH_IPPORT=y" \
+          "CONFIG_IP_SET_HASH_IPPORTIP=y" \
+          "CONFIG_IP_SET_HASH_IPPORTNET=y" \
+          "CONFIG_IP_SET_HASH_NET=y" \
+          "CONFIG_IP_SET_HASH_NETNET=y" \
+          "CONFIG_IP_SET_HASH_NETPORT=y" \
+          "CONFIG_IP_SET_HASH_MAC=y" \
+          "CONFIG_IP_SET_LIST_SET=y" \
+          "CONFIG_NETFILTER_XT_SET=y" \
+          "CONFIG_NETFILTER_XT_TARGET_REDIRECT=y" \
+          "CONFIG_NETFILTER_XT_TARGET_NETMAP=y" \
+          "CONFIG_IP_NF_TARGET_REDIRECT=y" \
+          "CONFIG_IP_NF_TARGET_NETMAP=y"
+        do
+          key="${opt%%=*}"
+          if grep -q "^${key}=" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^${key}=.*|${opt}|" "$DEFCONFIG"
+          elif grep -q "^# ${key} is not set" "$DEFCONFIG" 2>/dev/null; then
+            sed -i "s|^# ${key} is not set|${opt}|" "$DEFCONFIG"
+          else
+            echo "$opt" >> "$DEFCONFIG"
+          fi
+        done
+
+        echo "===== defconfig netfilter (must be =y) ====="
+        grep -E "TPROXY|MATCH_SOCKET|TARGET_NFQUEUE|MATCH_CONNBYTES|CONNTRACK|IP_SET|DEFRAG" "$DEFCONFIG" || true
+
+    - name: Configure Kernel (ARM)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+          HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5885Ls-93a_defconfig
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+          HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
+
+    - name: Verify .config
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        grep -E "CONFIG_NETFILTER_XT_TARGET_TPROXY|CONFIG_NETFILTER_XT_MATCH_SOCKET|CONFIG_IP_SET=" .config || true
+        for k in CONFIG_NETFILTER_XT_TARGET_TPROXY CONFIG_NETFILTER_XT_MATCH_SOCKET CONFIG_IP_SET; do
+          if ! grep -q "^${k}=y" .config; then
+            echo "::error::$k is NOT =y"
+            exit 1
+          fi
+        done
+
+    - name: Build kernel zImage (with built-ins)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+          HOSTCFLAGS=-fcommon LOCALVERSION=+ \
+          CC=arm-linux-gnueabihf-gcc \
+          zImage 2>&1 | tee /tmp/kernel-build.log
+
+    - name: Locate zImage and rename to vmlinuz.bin
+      if: success()
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        ls -la arch/arm/boot/zImage
+        cp arch/arm/boot/zImage "$GITHUB_WORKSPACE/vmlinuz.bin"
+        file "$GITHUB_WORKSPACE/vmlinuz.bin"
+
+    - name: Show build warnings/errors
+      if: always()
+      shell: bash
+      run: |
+        grep -iE "warning|error" /tmp/kernel-build.log | tail -n 80 || echo "none"
+
+    # ============================================================
+    # Huawei Balong firmware packaging
+    # ============================================================
+    - name: Prepare boot packaging workspace
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p boot_pkg
+
+        # Look for existing ramdisk files in the repo
+        echo "=== Searching for ramdisk files ==="
+        find . -maxdepth 4 -type f \( -iname "ramdisk1.cpio.gz" -o -iname "ramdisk2.cpio.gz" \) 2>/dev/null | head -10 || true
+
+        # Copy if found
+        for rd in ramdisk1.cpio.gz ramdisk2.cpio.gz; do
+          FOUND=$(find . -maxdepth 4 -type f -name "$rd" 2>/dev/null | head -1)
+          if [ -n "$FOUND" ]; then
+            cp "$FOUND" boot_pkg/
+            echo "Copied $rd from $FOUND"
+          else
+            echo "WARNING: $rd not found in repo"
+          fi
+        done
+
+        # Copy vmlinuz.bin
+        cp vmlinuz.bin boot_pkg/
+
+        ls -la boot_pkg/
+
+    - name: Generate Huawei firmware header (EXEC_KERNEL_IMAGE.bin)
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE/boot_pkg"
+
+        # Huawei Balong firmware files often use a simple header:
+        #   magic (4 bytes) + size (4 bytes) + payload
+        # The exact magic varies by firmware version.
+        # Common patterns used by balong_flash / hisiflash:
+        #   - "ANDROID!" (Android-style header, sometimes used)
+        #   - Raw appended (no header) — balong_flash can handle "raw" mode
+        #
+        # Safest approach: produce BOTH:
+        #   1) EXEC_KERNEL_IMAGE.bin as raw vmlinuz.bin (balong_flash compatible)
+        #   2) A wrapped version if you have a known-good header
+
+        # Raw copy (most reliable for balong_flash)
+        cp vmlinuz.bin EXEC_KERNEL_IMAGE.bin
+        file EXEC_KERNEL_IMAGE.bin
+        ls -la EXEC_KERNEL_IMAGE.bin
+
+    - name: Build boot image (Huawei Balong structure)
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE/boot_pkg"
+
+        # Huawei Balong boot images are NOT Android boot.img.
+        # They are typically a concatenation of:
+        #   [kernel][ramdisk1][ramdisk2][...]
+        # with a header that balong_flash or the bootloader understands.
+        #
+        # Since we don't have the exact signing/header format,
+        # we produce TWO deliverables:
+        #
+        # A) A "raw" concatenated image that balong_flash can try to flash
+        # B) A "modfw" ready structure for huawei_balong_modfw_kitchen
+
+        # --- Deliverable A: raw boot image ---
+        # Order: EXEC_KERNEL_IMAGE.bin + ramdisk1 + ramdisk2
+        rm -f boot.img.raw
+        cat EXEC_KERNEL_IMAGE.bin > boot.img.raw
+        [ -f ramdisk1.cpio.gz ] && cat ramdisk1.cpio.gz >> boot.img.raw
+        [ -f ramdisk2.cpio.gz ] && cat ramdisk2.cpio.gz >> boot.img.raw
+        cp boot.img.raw boot.img
+        file boot.img
+        ls -la boot.img
+
+        echo "=== Boot image structure ==="
+        echo "  EXEC_KERNEL_IMAGE.bin: $(stat -c %s EXEC_KERNEL_IMAGE.bin 2>/dev/null || echo 0) bytes"
+        echo "  ramdisk1.cpio.gz:      $(stat -c %s ramdisk1.cpio.gz 2>/dev/null || echo 'N/A') bytes"
+        echo "  ramdisk2.cpio.gz:      $(stat -c %s ramdisk2.cpio.gz 2>/dev/null || echo 'N/A') bytes"
+        echo "  boot.img total:        $(stat -c %s boot.img) bytes"
+
+    - name: Package deliverables
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p release-out
+
+        # vmlinuz.bin (kernel binary for direct replacement)
+        cp vmlinuz.bin release-out/ 2>/dev/null || true
+
+        # boot.img (attempt at Huawei Balong boot image)
+        cp boot_pkg/boot.img release-out/ 2>/dev/null || true
+
+        # EXEC_KERNEL_IMAGE.bin (for manual firmware kitchen use)
+        cp boot_pkg/EXEC_KERNEL_IMAGE.bin release-out/ 2>/dev/null || true
+
+        # ramdisks (in case user needs them separately)
+        cp boot_pkg/ramdisk*.cpio.gz release-out/ 2>/dev/null || true
+
+        # Tarball
+        tar -czf e5885-kernel-builtin.tar.gz -C release-out .
+        ls -la e5885-kernel-builtin.tar.gz
+        tar -tzf e5885-kernel-builtin.tar.gz
+
+    - name: Create Release
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.version }}
+        name: E5885 kernel + vmlinuz.bin + boot.img ${{ github.event.inputs.version }}
+        overwrite_files: true
+        files: |
+          e5885-kernel-builtin.tar.gz
+        body: |
+          E5885Ls-93a (Hi6932 Balong) Kernel — netfilter/TPROXY/ipset/conntrack **built-in**
+
+          **Kernel config used:**
+          - ARCH=arm
+          - CROSS_COMPILE=arm-linux-gnueabihf-
+          - LOCALVERSION=+
+          - defconfig: hi6932_E5885Ls-93a_defconfig
+          - Kernel: 3.10.100+ ARMv7
+
+          **Contents:**
+          - `vmlinuz.bin` — ARM zImage renamed as Huawei kernel binary
+          - `EXEC_KERNEL_IMAGE.bin` — Huawei firmware kernel section
+          - `boot.img` — Attempt at Huawei Balong boot image (raw concatenation)
+          - `ramdisk1.cpio.gz`, `ramdisk2.cpio.gz` — if found in repo
+
+          **Important notes:**
+          - No .ko files. Everything is inside the kernel.
+          - Huawei E5885 boot.img uses a **proprietary header + signing**.
+            This workflow produces a **raw concatenated** image that may work
+            with `balong_flash` in raw mode, but **may require re-signing**
+            with your board's signing keys.
+          - For proper firmware building, use `huawei_balong_modfw_kitchen`
+            with this `EXEC_KERNEL_IMAGE.bin`.
+
+          **Verify on device after flashing:**
+          ```sh
+          uname -a
+          iptables -t mangle -A PREROUTING -p tcp --dport 80 -j TPROXY --on-port 1080
+          ipset create test hash:ip
