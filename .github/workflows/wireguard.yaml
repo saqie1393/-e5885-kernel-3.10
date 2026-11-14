@@ -1,0 +1,249 @@
+name: Build WireGuard + wg tool for E5885
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version'
+        required: true
+        default: 'v1.0.20260223'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout E5885 Kernel
+      uses: actions/checkout@v4
+
+    - name: Install Build Dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget xz-utils
+
+    - name: Extract Linaro GCC 4.7
+      shell: bash
+      run: |
+        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
+        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        arm-linux-gnueabihf-gcc --version
+
+    - name: Detect Kernel Directory
+      shell: bash
+      run: |
+        if [ -f Makefile ] && grep -q "mrproper" Makefile; then
+          KERNEL_DIR="."
+        elif [ -f kernel/Makefile ]; then
+          KERNEL_DIR="kernel"
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
+          KERNEL_DIR="kernel/e5885-kernel-3.10"
+        else
+          echo "Kernel Makefile not found!"; exit 1
+        fi
+        echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+
+    - name: Configure E5885 Kernel (ARM)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5785-92c_defconfig
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
+
+    - name: Clone WireGuard Kernel Module (compat backport)
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        # WireGuard 3.10–5.5 کے لیے آفیشل backport استعمال کریں
+        git clone --depth 1 https://git.zx2c4.com/wireguard-linux-compat ../wireguard-kmod
+        rm -rf drivers/net/wireguard
+        ln -s "$(realpath ../wireguard-kmod/src)" drivers/net/wireguard
+
+    - name: Build WireGuard Kernel Module
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make -C . M=drivers/net/wireguard ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc V=1 modules 2>&1 | tee /tmp/build.log
+
+    - name: Show Kernel Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Kernel build warnings/errors ==="
+        grep -iE "warning|error" /tmp/build.log || echo "No warnings or errors found"
+
+    - name: Strip and Verify Kernel Module
+      if: success()
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        MODULE_PATH=$(find -L drivers/net/wireguard -name "wireguard.ko" -type f 2>/dev/null | head -1)
+        if [ -z "$MODULE_PATH" ]; then echo "Module not found!"; exit 1; fi
+        cp "$MODULE_PATH" "$GITHUB_WORKSPACE/wireguard.ko"
+        arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/wireguard.ko"
+        file "$GITHUB_WORKSPACE/wireguard.ko"
+        modinfo "$GITHUB_WORKSPACE/wireguard.ko" 2>/dev/null | grep vermagic || true
+
+    - name: Clone and Build wg tool (static ARMv7, musl)
+      shell: bash
+      run: |
+        TOOLS_DIR="wireguard-tools-src"
+
+        echo "=== Downloading musl toolchain from landley.net ==="
+        MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
+        tar -xJf /tmp/musl-cross.tar.xz -C /opt/
+        export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+        armv7l-linux-musleabihf-gcc --version
+
+        echo "=== Cloning wireguard-tools ==="
+        # آفیشل WireGuard tools ریپو
+        git clone --depth 1 https://git.zx2c4.com/wireguard-tools "../$TOOLS_DIR"
+        cd "../$TOOLS_DIR/src"
+
+        echo "=== Building wg statically for ARMv7 (musl) ==="
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -flto -ffunction-sections -fdata-sections -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
+        export LDFLAGS="-static -s -Wl,--gc-sections"
+
+        make CC="$CC" \
+             LDFLAGS="$LDFLAGS" \
+             RUNSTATEDIR=/var/run \
+             WITH_WGQUICK=no \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/wg-tools-out" \
+             2>&1 | tee /tmp/tools-build.log
+
+        echo "=== Installing wg to output directory ==="
+        make install \
+             CC="$CC" \
+             LDFLAGS="$LDFLAGS" \
+             RUNSTATEDIR=/var/run \
+             WITH_WGQUICK=no \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/wg-tools-out" \
+             2>&1 | tee -a /tmp/tools-build.log
+
+        echo "=== Verifying wg binary ==="
+        file "$GITHUB_WORKSPACE/wg-tools-out/usr/bin/wg" || true
+        ls -la "$GITHUB_WORKSPACE/wg-tools-out/usr/bin/wg" || true
+
+    - name: Show wg binary size (summary)
+      if: success()
+      shell: bash
+      run: |
+        WG_BIN="$GITHUB_WORKSPACE/wg-tools-out/usr/bin/wg"
+        if [ ! -f "$WG_BIN" ]; then
+          echo "ERROR: wg binary not found!"; exit 1
+        fi
+        echo "=========================================="
+        echo " wg binary details"
+        echo "=========================================="
+        file "$WG_BIN"
+        echo "------------------------------------------"
+        echo "Size (human readable): $(du -h "$WG_BIN" | cut -f1)"
+        echo "Size (bytes): $(stat -c %s "$WG_BIN")"
+        echo "=========================================="
+        echo "✅ If size is reasonable, musl static build worked correctly."
+        echo "=========================================="
+
+    - name: Show Tools Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Tools build warnings/errors ==="
+        grep -iE "warning|error" /tmp/tools-build.log || echo "No warnings or errors found"
+
+    - name: Package wg tool (wg only) into tar.gz
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p wg-tools-release
+        if [ ! -f wg-tools-out/usr/bin/wg ]; then
+          echo "ERROR: wg binary not found!"
+          exit 1
+        fi
+        cp wg-tools-out/usr/bin/wg wg-tools-release/
+        chmod +x wg-tools-release/wg
+
+        tar -czf wg-tools-armv7.tar.gz -C wg-tools-release .
+        echo "=== Tarball created ==="
+        ls -la wg-tools-armv7.tar.gz
+        echo "Tarball size: $(du -h wg-tools-armv7.tar.gz | cut -f1)"
+        echo "=== Contents of tarball ==="
+        tar -tzf wg-tools-armv7.tar.gz
+
+    - name: Upload Kernel Module Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: wireguard-ko-${{ github.event.inputs.version }}
+        path: wireguard.ko
+        if-no-files-found: error
+
+    - name: Upload wg Tool Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: wg-tool-${{ github.event.inputs.version }}
+        path: wg-tools-armv7.tar.gz
+        if-no-files-found: error
+
+    - name: Upload Build Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.event.inputs.version }}
+        path: |
+          /tmp/build.log
+          /tmp/tools-build.log
+        if-no-files-found: warn
+
+    - name: Create Tag (Release ke liye zaroori)
+      if: success()
+      shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -f ${{ github.event.inputs.version }}
+        git push origin -f ${{ github.event.inputs.version }}
+
+    - name: Create Release
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.version }}
+        name: WireGuard E5885 ${{ github.event.inputs.version }}
+        overwrite: true
+        files: |
+          wireguard.ko
+          wg-tools-armv7.tar.gz
+        body: |
+          WireGuard for Huawei E5885 (kernel 3.10)
+
+          **Contents:**
+          - `wireguard.ko` — Kernel module (vermagic 3.10.100+ ARMv7)
+          - `wg-tools-armv7.tar.gz` — Static `wg` binary for ARMv7 (musl)
+
+          **Note:** `wg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only).
+
+          **Install:**
+          ```sh
+          insmod /system/modules/wireguard.ko
+          tar -xzf wg-tools-armv7.tar.gz -C /usr/bin/
+          chmod +x /usr/bin/wg
+          wg --version
