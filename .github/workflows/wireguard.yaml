@@ -69,13 +69,29 @@ jobs:
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        CHACHA_FILE="drivers/net/wireguard/crypto/zinc/chacha20/chacha20-arm-glue.c"
-        if [ -f "$CHACHA_FILE" ]; then
-          sed -i 's/read_cpuid_part()/read_cpuid_part_number()/g' "$CHACHA_FILE"
-          echo "✅ Patched read_cpuid_part -> read_cpuid_part_number"
-        else
-          echo "⚠️ chacha20-arm-glue.c not found, skipping patch"
+        ZINC_DIR="drivers/net/wireguard/crypto/zinc"
+        PATCHED=0
+        for f in \
+          "$ZINC_DIR/chacha20/chacha20-arm-glue.c" \
+          "$ZINC_DIR/chacha20/chacha20-arm-glue.h" \
+          "$ZINC_DIR/chacha20/chacha20-arm.h" \
+          "$ZINC_DIR/chacha20/chacha20-arm-glue.h" ; do
+          if [ -f "$f" ]; then
+            sed -i 's/read_cpuid_part()/read_cpuid_part_number()/g; s/read_cpuid_part([^)]*)/read_cpuid_part_number()/g' "$f"
+            echo "✅ Patched $f"
+            PATCHED=1
+          fi
+        done
+        if [ "$PATCHED" = "0" ]; then
+          echo "⚠️ No zinc ARM files found — listing what exists:"
+          find "$ZINC_DIR" -name '*arm*' 2>/dev/null || true
         fi
+
+    - name: Show patched lines (debug)
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        grep -rn "read_cpuid_part" drivers/net/wireguard/crypto/zinc/ || echo "No read_cpuid_part left (good)"
     - name: Build WireGuard Kernel Module
       shell: bash
       run: |
