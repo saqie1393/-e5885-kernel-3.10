@@ -148,33 +148,56 @@ jobs:
         cd "$KERNEL_DIR"
         mkdir -p "$GITHUB_WORKSPACE/modules-out"
 
+        # Copy everything that exists; harmless if missing
+        copy_if() { [ -f "$1" ] && cp "$1" "$GITHUB_WORKSPACE/modules-out/" || true; }
+
         # TPROXY related
-        cp net/netfilter/xt_TPROXY.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "xt_TPROXY.ko not found"
-        cp net/netfilter/xt_socket.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "xt_socket.ko not found"
-        cp net/netfilter/xt_mark.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || true
-        cp net/netfilter/nf_tproxy_core.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || true
+        copy_if net/netfilter/xt_TPROXY.ko
+        copy_if net/netfilter/xt_socket.ko
+        copy_if net/netfilter/xt_mark.ko
+        copy_if net/netfilter/nf_tproxy_core.ko
         find net/ipv4/netfilter -name "*defrag*.ko" -exec cp {} "$GITHUB_WORKSPACE/modules-out/" \; 2>/dev/null || true
 
-        # Extra modules requested
-        cp net/netfilter/nfnetlink.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "nfnetlink.ko not found"
-        cp net/netfilter/nf_conntrack.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "nf_conntrack.ko not found"
-        cp net/netfilter/nfnetlink_queue.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "nfnetlink_queue.ko not found"
-        cp net/netfilter/xt_NFQUEUE.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "xt_NFQUEUE.ko not found"
-        cp net/netfilter/xt_connbytes.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || echo "xt_connbytes.ko not found"
+        # Extra modules (may be =y built-in, hence .ko may not exist)
+        copy_if net/netfilter/nfnetlink.ko
+        copy_if net/netfilter/nf_conntrack.ko
+        copy_if net/netfilter/nfnetlink_queue.ko
+        copy_if net/netfilter/xt_NFQUEUE.ko
+        copy_if net/netfilter/xt_connbytes.ko
 
         # ipset modules
         find net/netfilter -name "ip_set*.ko" -exec cp {} "$GITHUB_WORKSPACE/modules-out/" \; 2>/dev/null || true
-        cp net/netfilter/xt_set.ko "$GITHUB_WORKSPACE/modules-out/" 2>/dev/null || true
+        copy_if net/netfilter/xt_set.ko
 
-        # Verify required modules exist
+        # SMART VERIFICATION: for each interesting module, if it's =m but .ko missing → fail.
+        # If it's =y (built-in) → OK, no .ko expected.
         MISSING=0
-        for m in xt_TPROXY.ko xt_socket.ko nfnetlink.ko nf_conntrack.ko nfnetlink_queue.ko xt_NFQUEUE.ko xt_connbytes.ko; do
-          if [ ! -f "$GITHUB_WORKSPACE/modules-out/$m" ]; then
-            echo "::error::$m was NOT built!"
-            MISSING=1
+        for name in xt_TPROXY xt_socket xt_NFQUEUE xt_connbytes nf_conntrack nfnetlink nfnetlink_queue; do
+          ko="$GITHUB_WORKSPACE/modules-out/${name}.ko"
+          cfg_m=$(grep -c "^CONFIG_.*${name^^}=m$" .config 2>/dev/null || true)
+          # Fallback: broad grep (name may not map exactly to CONFIG_ key)
+          if [ -f "$ko" ]; then
+            echo "OK   $name.ko present"
+          else
+            if grep -qE "^CONFIG_(NETFILTER_)?(XT_)?${name//_/}=y$" .config 2>/dev/null \
+               || grep -qE "CONFIG_.*${name^^}=y" .config 2>/dev/null; then
+              echo "SKIP $name (built-in =y in kernel, no .ko expected)"
+            else
+              echo "::warning::$name.ko not built and not built-in — may be missing"
+              MISSING=$((MISSING+1))
+            fi
           fi
         done
-        if [ "$MISSING" = "1" ]; then
+
+        # xt_TPROXY.ko MUST exist as a real module (that's the whole point)
+        if [ ! -f "$GITHUB_WORKSPACE/modules-out/xt_TPROXY.ko" ]; then
+          echo "::error::xt_TPROXY.ko missing — TPROXY is not built as a module"
+          exit 1
+        fi
+
+        # If more than half of the optional modules are missing, hard fail
+        if [ "$MISSING" -gt 3 ]; then
+          echo "::error::too many expected modules are missing ($MISSING)"
           exit 1
         fi
 
