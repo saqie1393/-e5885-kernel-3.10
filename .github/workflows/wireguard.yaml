@@ -65,33 +65,41 @@ jobs:
         git clone --depth 1 https://git.zx2c4.com/wireguard-linux-compat ../wireguard-kmod
         rm -rf drivers/net/wireguard
         ln -s "$(realpath ../wireguard-kmod/src)" drivers/net/wireguard
-    - name: Patch WireGuard compat for 3.10 (read_cpuid_part)
+    - name: Patch WireGuard compat for 3.10 (read_cpuid_part) — recursive
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         ZINC_DIR="drivers/net/wireguard/crypto/zinc"
-        PATCHED=0
-        for f in \
-          "$ZINC_DIR/chacha20/chacha20-arm-glue.c" \
-          "$ZINC_DIR/chacha20/chacha20-arm-glue.h" \
-          "$ZINC_DIR/chacha20/chacha20-arm.h" \
-          "$ZINC_DIR/chacha20/chacha20-arm-glue.h" ; do
-          if [ -f "$f" ]; then
-            sed -i 's/read_cpuid_part()/read_cpuid_part_number()/g; s/read_cpuid_part([^)]*)/read_cpuid_part_number()/g' "$f"
-            echo "✅ Patched $f"
-            PATCHED=1
-          fi
-        done
-        if [ "$PATCHED" = "0" ]; then
-          echo "⚠️ No zinc ARM files found — listing what exists:"
-          find "$ZINC_DIR" -name '*arm*' 2>/dev/null || true
-        fi
 
-    - name: Show patched lines (debug)
+        echo "=== Files before patch that still reference read_cpuid_part ==="
+        grep -rln "read_cpuid_part" "$ZINC_DIR" || echo "(none)"
+
+        echo "=== Rewriting ALL occurrences of read_cpuid_part(...) → read_cpuid_part_number() ==="
+        FILES=$(grep -rln "read_cpuid_part" "$ZINC_DIR" || true)
+        for f in $FILES; do
+          # Replace bare `read_cpuid_part()` first (avoid double-suffixing)
+          sed -i 's/read_cpuid_part()/read_cpuid_part_number()/g' "$f"
+          # Replace any `read_cpuid_part(anything)` form
+          sed -i -E 's/read_cpuid_part[[:space:]]*\([^)]*\)/read_cpuid_part_number()/g' "$f"
+          # Catch the bare macro (no parentheses) used as a token
+          sed -i -E 's/(^|[^_a-zA-Z])read_cpuid_part([^_a-zA-Z]|$)/\1read_cpuid_part_number\2/g' "$f"
+          echo "✅ Patched $f"
+        done
+
+        echo "=== Files AFTER patch still containing read_cpuid_part (should be empty) ==="
+        grep -rn "read_cpuid_part" "$ZINC_DIR" | grep -v "read_cpuid_part_number" || echo "✅ no raw read_cpuid_part left"
+
+    - name: Silence deprecated-declaration warnings (won't fail the build)
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        grep -rn "read_cpuid_part" drivers/net/wireguard/crypto/zinc/ || echo "No read_cpuid_part left (good)"
+        # Add -Wno-deprecated-declarations to the module's Makefile flags so
+        # read_cpuid_part_number() deprecation warning does not become noise.
+        MOD_MAKE="drivers/net/wireguard/Makefile"
+        if [ -f "$MOD_MAKE" ] && ! grep -q "Wno-deprecated-declarations" "$MOD_MAKE"; then
+          echo "ccflags-y += -Wno-deprecated-declarations" >> "$MOD_MAKE"
+          echo "✅ Added -Wno-deprecated-declarations to $MOD_MAKE"
+        fi
     - name: Build WireGuard Kernel Module
       shell: bash
       run: |
