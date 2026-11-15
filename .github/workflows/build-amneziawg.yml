@@ -1,0 +1,313 @@
+name: Build AmneziaWG (latest) + awg tool for E5885
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (release/tag name in your repo)'
+        required: true
+        default: 'v3.1.20260812'
+      kmod_tag:
+        description: 'amneziawg-linux-kernel-module tag ("latest" = newest tag)'
+        required: true
+        default: 'v3.1.20260812'
+      tools_tag:
+        description: 'amneziawg-tools tag ("latest" = newest tag)'
+        required: true
+        default: 'latest'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.event.inputs.version }}
+      KMOD_TAG_IN: ${{ github.event.inputs.kmod_tag }}
+      TOOLS_TAG_IN: ${{ github.event.inputs.tools_tag }}
+
+    steps:
+    - name: Checkout E5885 Kernel
+      uses: actions/checkout@v4
+
+    - name: Install Build Dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget xz-utils
+
+    - name: Resolve upstream tags
+      shell: bash
+      run: |
+        latest_tag() {
+          git ls-remote --tags --refs "$1" \
+            | sed 's|.*refs/tags/||' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1
+        }
+        KMOD_URL=https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git
+        TOOLS_URL=https://github.com/amnezia-vpn/amneziawg-tools.git
+
+        if [ "$KMOD_TAG_IN" = "latest" ]; then KMOD_TAG=$(latest_tag "$KMOD_URL"); else KMOD_TAG="$KMOD_TAG_IN"; fi
+        if [ "$TOOLS_TAG_IN" = "latest" ]; then TOOLS_TAG=$(latest_tag "$TOOLS_URL"); else TOOLS_TAG="$TOOLS_TAG_IN"; fi
+
+        [ -n "$KMOD_TAG" ] && [ -n "$TOOLS_TAG" ] || { echo "Could not resolve tags"; exit 1; }
+        echo "Kernel module tag: $KMOD_TAG"
+        echo "Tools tag:         $TOOLS_TAG"
+        echo "KMOD_TAG=$KMOD_TAG" >> "$GITHUB_ENV"
+        echo "TOOLS_TAG=$TOOLS_TAG" >> "$GITHUB_ENV"
+
+    - name: Extract Linaro GCC 4.7
+      shell: bash
+      run: |
+        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
+        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        arm-linux-gnueabihf-gcc --version
+
+    - name: Detect Kernel Directory
+      shell: bash
+      run: |
+        if [ -f Makefile ] && grep -q "mrproper" Makefile; then
+          KERNEL_DIR="."
+        elif [ -f kernel/Makefile ]; then
+          KERNEL_DIR="kernel"
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
+          KERNEL_DIR="kernel/e5885-kernel-3.10"
+        else
+          echo "Kernel Makefile not found!"; exit 1
+        fi
+        echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+
+    - name: Configure E5885 Kernel (ARM)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5785-92c_defconfig
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
+
+    - name: Clone AmneziaWG Kernel Module
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        git clone --branch "$KMOD_TAG" --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
+        rm -rf drivers/net/amneziawg
+        ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
+
+    - name: Apply 3.10 compatibility patch
+      shell: bash
+      run: |
+        # The patch paths (a/compat/..., b/Kbuild, ...) are relative to the module's src/ directory.
+        PATCH_FILE="$GITHUB_WORKSPACE/patches/3.10-compat.patch"
+        [ -f "$PATCH_FILE" ] || { echo "ERROR: $PATCH_FILE not found"; exit 1; }
+        cd "$GITHUB_WORKSPACE/$KERNEL_DIR/../amneziawg-kmod/src"
+        if patch -p1 --dry-run --forward < "$PATCH_FILE"; then
+          patch -p1 --forward < "$PATCH_FILE"
+          echo "Patch applied"
+        else
+          echo "ERROR: patch does not apply cleanly to $KMOD_TAG."
+          echo "Regenerate patches/3.10-compat.patch against this tag."
+          exit 1
+        fi
+
+    - name: Build AmneziaWG Kernel Module
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make -C . M=drivers/net/amneziawg ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc V=1 modules 2>&1 | tee /tmp/build.log
+
+    - name: Show Kernel Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Kernel build warnings/errors ==="
+        grep -iE "warning|error" /tmp/build.log || echo "No warnings or errors found"
+
+    - name: Strip and Verify Kernel Module
+      if: success()
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        MODULE_PATH=$(find -L drivers/net/amneziawg -name "amneziawg.ko" -type f 2>/dev/null | head -1)
+        if [ -z "$MODULE_PATH" ]; then echo "Module not found!"; exit 1; fi
+        cp "$MODULE_PATH" "$GITHUB_WORKSPACE/amneziawg.ko"
+        arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/amneziawg.ko"
+        file "$GITHUB_WORKSPACE/amneziawg.ko"
+        modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep -E "vermagic|version" || true
+
+        echo "=== Undefined symbols the running kernel must export ==="
+        arm-linux-gnueabihf-nm "$GITHUB_WORKSPACE/amneziawg.ko" | grep ' U ' | awk '{print $2}' | sort > /tmp/undefined-symbols.txt
+        wc -l /tmp/undefined-symbols.txt
+
+        echo "=== Symbols not exported by this kernel tree (Module.symvers) ==="
+        if [ -f Module.symvers ]; then
+          awk '{print $2}' Module.symvers | sort > /tmp/exported.txt
+          comm -23 /tmp/undefined-symbols.txt /tmp/exported.txt | tee /tmp/missing-symbols.txt || true
+        fi
+        cp /tmp/undefined-symbols.txt /tmp/missing-symbols.txt "$GITHUB_WORKSPACE/" 2>/dev/null || true
+
+    - name: Clone and Build awg tool (static ARMv7, musl)
+      shell: bash
+      run: |
+        TOOLS_DIR="amneziawg-tools-src"
+
+        echo "=== Downloading musl toolchain from landley.net ==="
+        MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
+        tar -xJf /tmp/musl-cross.tar.xz -C /opt/
+        export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+        armv7l-linux-musleabihf-gcc --version
+
+        echo "=== Cloning amneziawg-tools $TOOLS_TAG ==="
+        git clone --branch "$TOOLS_TAG" --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git "../$TOOLS_DIR"
+        cd "../$TOOLS_DIR/src"
+
+        echo "=== Checking for wireguard.h ==="
+        find . -name "wireguard.h" -type f 2>/dev/null || echo "wireguard.h NOT FOUND"
+
+        if [ -f uapi/linux/linux/wireguard.h ] && [ ! -f uapi/linux/wireguard.h ]; then
+          ln -s linux/wireguard.h uapi/linux/wireguard.h
+          echo "Created symlink: uapi/linux/wireguard.h -> linux/wireguard.h"
+        fi
+
+        echo "=== Building awg statically for ARMv7 (musl) ==="
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -flto -ffunction-sections -fdata-sections -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
+        export LDFLAGS="-static -s -Wl,--gc-sections"
+
+        make CC="$CC" \
+             LDFLAGS="$LDFLAGS" \
+             RUNSTATEDIR=/var/run \
+             WITH_WGQUICK=yes \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
+             2>&1 | tee /tmp/tools-build.log
+
+        echo "=== Installing awg to output directory ==="
+        make install \
+             CC="$CC" \
+             LDFLAGS="$LDFLAGS" \
+             RUNSTATEDIR=/var/run \
+             WITH_WGQUICK=yes \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
+             2>&1 | tee -a /tmp/tools-build.log
+
+        echo "=== Verifying awg binary ==="
+        file "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
+        ls -la "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
+
+    - name: Show awg binary size (summary)
+      if: success()
+      shell: bash
+      run: |
+        AWG_BIN="$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg"
+        if [ ! -f "$AWG_BIN" ]; then
+          echo "ERROR: awg binary not found!"; exit 1
+        fi
+        file "$AWG_BIN"
+        echo "Size (human readable): $(du -h "$AWG_BIN" | cut -f1)"
+        echo "Size (bytes): $(stat -c %s "$AWG_BIN")"
+
+    - name: Show Tools Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Tools build warnings/errors ==="
+        grep -iE "warning|error" /tmp/tools-build.log || echo "No warnings or errors found"
+
+    - name: Package awg tool (awg only) into tar.gz
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p awg-tools-release
+        if [ ! -f awg-tools-out/usr/bin/awg ]; then
+          echo "ERROR: awg binary not found!"
+          exit 1
+        fi
+        cp awg-tools-out/usr/bin/awg awg-tools-release/
+        chmod +x awg-tools-release/awg
+
+        tar -czf awg-tools-armv7.tar.gz -C awg-tools-release .
+        ls -la awg-tools-armv7.tar.gz
+        tar -tzf awg-tools-armv7.tar.gz
+
+    - name: Upload Kernel Module Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: amneziawg-ko-${{ github.event.inputs.version }}
+        path: amneziawg.ko
+        if-no-files-found: error
+
+    - name: Upload awg Tool Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: awg-tool-${{ github.event.inputs.version }}
+        path: awg-tools-armv7.tar.gz
+        if-no-files-found: error
+
+    - name: Upload Build Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.event.inputs.version }}
+        path: |
+          /tmp/build.log
+          /tmp/tools-build.log
+          /tmp/undefined-symbols.txt
+          /tmp/missing-symbols.txt
+        if-no-files-found: warn
+
+    # ================= RELEASE =================
+    - name: Create Tag
+      if: success()
+      shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -f "$VERSION"
+        git push origin -f "$VERSION"
+
+    - name: Create Release
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.version }}
+        name: AmneziaWG E5885 ${{ github.event.inputs.version }}
+        overwrite: true
+        files: |
+          amneziawg.ko
+          awg-tools-armv7.tar.gz
+        body: |
+          AmneziaWG for Huawei E5885 (kernel 3.10)
+
+          Built from upstream tags:
+          - kernel module: `${{ env.KMOD_TAG }}`
+          - awg tools: `${{ env.TOOLS_TAG }}`
+
+          **Contents:**
+          - `amneziawg.ko` — Kernel module (ARMv7, kernel 3.10 + compat patch, private kernel-mode NEON)
+          - `awg-tools-armv7.tar.gz` — Static `awg` binary for ARMv7 (musl)
+
+          **Note:** `awg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only).
+
+          **Install:**
+          ```sh
+          insmod /system/modules/amneziawg.ko        # add neon=0 to disable NEON
+          tar -xzf awg-tools-armv7.tar.gz -C /usr/bin/
+          chmod +x /usr/bin/awg
+          awg --version
+          ```
