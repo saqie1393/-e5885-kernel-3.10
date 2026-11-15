@@ -1,0 +1,783 @@
+name: Build AmneziaWG (latest) + awg tool for E5885
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (release/tag name in your repo)'
+        required: true
+        default: 'v3.1.20260812'
+      kmod_tag:
+        description: 'amneziawg-linux-kernel-module tag ("latest" = newest tag)'
+        required: true
+        default: 'v3.1.20260812'
+      tools_tag:
+        description: 'amneziawg-tools tag ("latest" = newest tag)'
+        required: true
+        default: 'latest'
+      zinc_arm_asm:
+        description: 'ARM assembly crypto (y) or generic C only (n). Use n if the router reboots.'
+        required: true
+        default: 'n'
+        type: choice
+        options:
+          - 'n'
+          - 'y'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.event.inputs.version }}
+      KMOD_TAG_IN: ${{ github.event.inputs.kmod_tag }}
+      TOOLS_TAG_IN: ${{ github.event.inputs.tools_tag }}
+      ZINC_ARM: ${{ github.event.inputs.zinc_arm_asm }}
+
+    steps:
+    - name: Checkout E5885 Kernel
+      uses: actions/checkout@v4
+
+    - name: Install Build Dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget xz-utils
+
+    - name: Resolve upstream tags
+      shell: bash
+      run: |
+        latest_tag() {
+          git ls-remote --tags --refs "$1" \
+            | sed 's|.*refs/tags/||' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1
+        }
+        KMOD_URL=https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git
+        TOOLS_URL=https://github.com/amnezia-vpn/amneziawg-tools.git
+
+        if [ "$KMOD_TAG_IN" = "latest" ]; then KMOD_TAG=$(latest_tag "$KMOD_URL"); else KMOD_TAG="$KMOD_TAG_IN"; fi
+        if [ "$TOOLS_TAG_IN" = "latest" ]; then TOOLS_TAG=$(latest_tag "$TOOLS_URL"); else TOOLS_TAG="$TOOLS_TAG_IN"; fi
+
+        [ -n "$KMOD_TAG" ] && [ -n "$TOOLS_TAG" ] || { echo "Could not resolve tags"; exit 1; }
+        echo "Kernel module tag: $KMOD_TAG"
+        echo "Tools tag:         $TOOLS_TAG"
+        echo "KMOD_TAG=$KMOD_TAG" >> "$GITHUB_ENV"
+        echo "TOOLS_TAG=$TOOLS_TAG" >> "$GITHUB_ENV"
+
+    - name: Extract Linaro GCC 4.7
+      shell: bash
+      run: |
+        tar -xjf gcc/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux.tar.bz2 -C /opt/
+        sudo mv /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux /opt/gcc-4.7
+        echo "/opt/gcc-4.7/bin" >> "$GITHUB_PATH"
+        echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        arm-linux-gnueabihf-gcc --version
+
+    - name: Detect Kernel Directory
+      shell: bash
+      run: |
+        if [ -f Makefile ] && grep -q "mrproper" Makefile; then
+          KERNEL_DIR="."
+        elif [ -f kernel/Makefile ]; then
+          KERNEL_DIR="kernel"
+        elif [ -f kernel/e5885-kernel-3.10/Makefile ]; then
+          KERNEL_DIR="kernel/e5885-kernel-3.10"
+        else
+          echo "Kernel Makefile not found!"; exit 1
+        fi
+        echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+
+    - name: Configure E5885 Kernel (ARM)
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ hi6932_E5785-92c_defconfig
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
+
+    - name: Clone AmneziaWG Kernel Module
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        git clone --branch "$KMOD_TAG" --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
+        rm -rf drivers/net/amneziawg
+        ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
+
+    - name: Apply 3.10 compatibility patch (embedded in this workflow)
+      shell: bash
+      run: |
+        # Patch paths are relative to the module's src/ directory.
+        cd "$GITHUB_WORKSPACE/$KERNEL_DIR/../amneziawg-kmod/src"
+        cat > /tmp/3.10-compat.patch <<'AWG_PATCH_EOF'
+        diff -ruN a/compat/compat-asm.h b/compat/compat-asm.h
+        --- a/compat/compat-asm.h
+        +++ b/compat/compat-asm.h
+        @@ -42,11 +42,13 @@
+         
+         #if defined(__LINUX_ARM_ARCH__) && LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+         #include <asm/assembler.h>
+        +#ifndef lspush
+         #define lspush push
+         #define lspull pull
+         #undef push
+         #undef pull
+         #endif
+        +#endif
+         
+         #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 76) && !defined(ISRHEL8) && !defined(SYM_FUNC_START)
+         #define SYM_FUNC_START ENTRY
+        diff -ruN a/compat/compat.h b/compat/compat.h
+        --- a/compat/compat.h
+        +++ b/compat/compat.h
+        @@ -768,7 +768,7 @@
+         }
+         #endif
+         
+        -#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 17, 0)
+        +#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 17, 0) && !defined(COMPAT_HAS_READ_CPUID_PART)
+         #define read_cpuid_part() read_cpuid_part_number()
+         #endif
+         
+        @@ -1270,6 +1270,56 @@
+         #define dev_get_tstats64 ip_tunnel_get_stats64
+         #endif
+         
+        +#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 0) && !IS_ENABLED(CONFIG_NET_IP_TUNNEL)
+        +/* ip_tunnel_get_stats64() lives in net/ipv4/ip_tunnel.c, which is not built
+        + * when CONFIG_NET_IP_TUNNEL is off; carry a private copy of the 3.10 version
+        + * instead of depending on an extra ip_tunnel module. */
+        +#include <linux/netdevice.h>
+        +#include <linux/u64_stats_sync.h>
+        +#include <linux/if_tunnel.h>
+        +static inline struct rtnl_link_stats64 *__compat_ip_tunnel_get_stats64(struct net_device *dev,
+        +								       struct rtnl_link_stats64 *tot)
+        +{
+        +	int i;
+        +
+        +	for_each_possible_cpu(i) {
+        +		const struct pcpu_tstats *tstats = per_cpu_ptr(dev->tstats, i);
+        +		u64 rx_packets, rx_bytes, tx_packets, tx_bytes;
+        +		unsigned int start;
+        +
+        +		do {
+        +			start = u64_stats_fetch_begin_bh(&tstats->syncp);
+        +			rx_packets = tstats->rx_packets;
+        +			tx_packets = tstats->tx_packets;
+        +			rx_bytes = tstats->rx_bytes;
+        +			tx_bytes = tstats->tx_bytes;
+        +		} while (u64_stats_fetch_retry_bh(&tstats->syncp, start));
+        +
+        +		tot->rx_packets += rx_packets;
+        +		tot->tx_packets += tx_packets;
+        +		tot->rx_bytes   += rx_bytes;
+        +		tot->tx_bytes   += tx_bytes;
+        +	}
+        +
+        +	tot->multicast = dev->stats.multicast;
+        +	tot->rx_crc_errors = dev->stats.rx_crc_errors;
+        +	tot->rx_fifo_errors = dev->stats.rx_fifo_errors;
+        +	tot->rx_length_errors = dev->stats.rx_length_errors;
+        +	tot->rx_frame_errors = dev->stats.rx_frame_errors;
+        +	tot->rx_errors = dev->stats.rx_errors;
+        +	tot->tx_fifo_errors = dev->stats.tx_fifo_errors;
+        +	tot->tx_carrier_errors = dev->stats.tx_carrier_errors;
+        +	tot->tx_dropped = dev->stats.tx_dropped;
+        +	tot->tx_aborted_errors = dev->stats.tx_aborted_errors;
+        +	tot->tx_errors = dev->stats.tx_errors;
+        +	tot->collisions  = dev->stats.collisions;
+        +
+        +	return tot;
+        +}
+        +#undef dev_get_tstats64
+        +#define dev_get_tstats64 __compat_ip_tunnel_get_stats64
+        +#endif
+        +
+         #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0) || defined(ISRHEL9)
+         #define COMPAT_NETDEV_HAS_LLTX_PARAM
+         #endif
+        @@ -1415,6 +1465,31 @@
+         }
+         #endif
+         
+        +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0) && !defined(fallthrough)
+        +#define fallthrough do {} while (0)  /* fallthrough */
+        +#endif
+        +
+        +#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0)
+        +#include <linux/string.h>
+        +#include <linux/errno.h>
+        +/* minimal strscpy() for kernels before 4.3 */
+        +static inline ssize_t __compat_strscpy(char *dest, const char *src, size_t count)
+        +{
+        +	size_t len;
+        +	if (count == 0)
+        +		return -E2BIG;
+        +	len = strnlen(src, count);
+        +	if (len >= count) {
+        +		memcpy(dest, src, count - 1);
+        +		dest[count - 1] = '\0';
+        +		return -E2BIG;
+        +	}
+        +	memcpy(dest, src, len + 1);
+        +	return len;
+        +}
+        +#define strscpy __compat_strscpy
+        +#endif
+        +
+         #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0)
+         #include <crypto/chacha.h>
+         #define CHACHA_KEY_WORDS	8
+        diff -ruN a/compat/crypto/chacha/include/crypto/chacha.h b/compat/crypto/chacha/include/crypto/chacha.h
+        --- /dev/null
+        +++ b/compat/crypto/chacha/include/crypto/chacha.h
+        @@ -0,0 +1,47 @@
+        +/* SPDX-License-Identifier: GPL-2.0 */
+        +/*
+        + * Compat <crypto/chacha.h> for kernels without lib/crypto chacha (< 4.20).
+        + * Provides chacha_init() and chacha20_crypt() with the same semantics as
+        + * the 5.x kernel API, backed by the zinc chacha20 implementation that the
+        + * module already builds for old kernels.
+        + */
+        +#ifndef _COMPAT_CRYPTO_CHACHA_H
+        +#define _COMPAT_CRYPTO_CHACHA_H
+        +
+        +#include <zinc/chacha20.h>
+        +
+        +#define CHACHA_IV_SIZE		16
+        +#define CHACHA_KEY_SIZE		32
+        +#define CHACHA_BLOCK_SIZE	64
+        +#define CHACHA_STATE_WORDS	(CHACHA_BLOCK_SIZE / sizeof(u32))
+        +
+        +static inline void chacha_init(u32 *state, const u32 *key, const u8 *iv)
+        +{
+        +	state[0]  = CHACHA20_CONSTANT_EXPA;
+        +	state[1]  = CHACHA20_CONSTANT_ND_3;
+        +	state[2]  = CHACHA20_CONSTANT_2_BY;
+        +	state[3]  = CHACHA20_CONSTANT_TE_K;
+        +	state[4]  = key[0];
+        +	state[5]  = key[1];
+        +	state[6]  = key[2];
+        +	state[7]  = key[3];
+        +	state[8]  = key[4];
+        +	state[9]  = key[5];
+        +	state[10] = key[6];
+        +	state[11] = key[7];
+        +	state[12] = get_unaligned_le32(iv +  0);
+        +	state[13] = get_unaligned_le32(iv +  4);
+        +	state[14] = get_unaligned_le32(iv +  8);
+        +	state[15] = get_unaligned_le32(iv + 12);
+        +}
+        +
+        +static inline void chacha20_crypt(u32 *state, u8 *dst, const u8 *src,
+        +					  unsigned int bytes)
+        +{
+        +	/* Used for short header protection, also with BH disabled: scalar only.
+        +	 * zinc's chacha20_ctx is { key[8]; counter[4]; } without the 4 constant
+        +	 * words, so point it at state + 4. */
+        +	chacha20((struct chacha20_ctx *)(state + 4), dst, src, bytes, DONT_USE_SIMD);
+        +}
+        +
+        +#endif /* _COMPAT_CRYPTO_CHACHA_H */
+        diff -ruN a/compat/Kbuild.include b/compat/Kbuild.include
+        --- a/compat/Kbuild.include
+        +++ b/compat/Kbuild.include
+        @@ -112,6 +112,10 @@
+         ccflags-y += -I$(kbuild-dir)/compat/crypto/blake2s/include
+         endif
+         
+        +ifeq ($(wildcard $(srctree)/include/crypto/chacha.h),)
+        +ccflags-y += -I$(kbuild-dir)/compat/crypto/chacha/include
+        +endif
+        +
+         ifeq ($(wildcard $(srctree)/include/crypto/chacha20poly1305.h),)
+         ccflags-y += -I$(kbuild-dir)/compat/crypto/chacha20poly1305/include
+         endif
+        @@ -135,3 +139,7 @@
+         ifeq ($(wildcard $(srctree)/include/linux/sprintf.h),)
+         ccflags-y += -I$(kbuild-dir)/compat/sprintf/include
+         endif
+        +
+        +ifneq ($(shell grep -s -F "read_cpuid_part(void)" "$(srctree)/arch/arm/include/asm/cputype.h"),)
+        +ccflags-y += -DCOMPAT_HAS_READ_CPUID_PART
+        +endif
+        diff -ruN a/compat/neon-arm/kmode_neon.c b/compat/neon-arm/kmode_neon.c
+        --- /dev/null
+        +++ b/compat/neon-arm/kmode_neon.c
+        @@ -0,0 +1,88 @@
+        +// SPDX-License-Identifier: GPL-2.0
+        +/*
+        + * Private kernel-mode NEON for kernels built without CONFIG_KERNEL_MODE_NEON.
+        + * Same logic as kernel_neon_begin()/kernel_neon_end() of arch/arm/vfp/vfpmodule.c
+        + * in this very kernel tree, using vfp_current_hw_state and vfp_save_state found
+        + * through kallsyms_lookup_name(). Uniprocessor only.
+        + *
+        + * The in_interrupt() BUG_ON of the original is not kept: may_use_simd() below
+        + * refuses hard and soft irq context, and nothing else in this kernel touches
+        + * NEON from BH-disabled sections.
+        + */
+        +#include <linux/kernel.h>
+        +#include <linux/module.h>
+        +#include <linux/kallsyms.h>
+        +#include <linux/preempt.h>
+        +#include <linux/sched.h>
+        +#include <linux/smp.h>
+        +#include <asm/thread_info.h>
+        +#include <asm/vfp.h>
+        +
+        +#ifdef CONFIG_SMP
+        +#error "kmode_neon.c supports uniprocessor kernels only"
+        +#endif
+        +
+        +#define awg_fmrx(_vfp_) ({ u32 __v; \
+        +	asm("mrc p10, 7, %0, " #_vfp_ ", cr0, 0" : "=r" (__v) : : "cc"); __v; })
+        +#define awg_fmxr(_vfp_, _var_) \
+        +	asm("mcr p10, 7, %0, " #_vfp_ ", cr0, 0" : : "r" (_var_) : "cc")
+        +
+        +static bool neon = true;
+        +module_param(neon, bool, 0444);
+        +MODULE_PARM_DESC(neon, "Use kernel-mode NEON for crypto (default: on)");
+        +
+        +bool awg_kmode_neon_enabled __read_mostly;
+        +
+        +static union vfp_state **awg_vfp_hw_state __read_mostly;
+        +static void (*awg_vfp_save_state)(void *location, u32 fpexc) __read_mostly;
+        +
+        +void kernel_neon_begin(void)
+        +{
+        +	struct thread_info *thread = current_thread_info();
+        +	union vfp_state **hw;
+        +	unsigned int cpu;
+        +	u32 fpexc;
+        +
+        +	cpu = get_cpu();
+        +	hw = &awg_vfp_hw_state[cpu];
+        +
+        +	fpexc = awg_fmrx(cr8) | FPEXC_EN;
+        +	awg_fmxr(cr8, fpexc);
+        +
+        +	/* Save the userland NEON/VFP state; under UP the owner may be another task. */
+        +	if (*hw == &thread->vfpstate)
+        +		awg_vfp_save_state(&thread->vfpstate, fpexc);
+        +	else if (*hw != NULL)
+        +		awg_vfp_save_state(*hw, fpexc);
+        +	*hw = NULL;
+        +}
+        +
+        +void kernel_neon_end(void)
+        +{
+        +	awg_fmxr(cr8, awg_fmrx(cr8) & ~FPEXC_EN);
+        +	put_cpu();
+        +}
+        +
+        +void __init awg_kmode_neon_init(void)
+        +{
+        +	unsigned long hw, save;
+        +
+        +	if (!neon) {
+        +		pr_info("kernel-mode NEON: off (neon=0)\n");
+        +		return;
+        +	}
+        +	if (!(elf_hwcap & HWCAP_NEON)) {
+        +		pr_info("kernel-mode NEON: off (no NEON in hwcap)\n");
+        +		return;
+        +	}
+        +	hw = kallsyms_lookup_name("vfp_current_hw_state");
+        +	save = kallsyms_lookup_name("vfp_save_state");
+        +	if (!hw || !save) {
+        +		pr_warn("kernel-mode NEON: off (vfp symbols not found)\n");
+        +		return;
+        +	}
+        +	awg_vfp_hw_state = (union vfp_state **)hw;
+        +	awg_vfp_save_state = (void (*)(void *, u32))save;
+        +	awg_kmode_neon_enabled = true;
+        +	pr_info("kernel-mode NEON: on\n");
+        +}
+        diff -ruN a/compat/simd-asm/include/asm/simd.h b/compat/simd-asm/include/asm/simd.h
+        --- a/compat/simd-asm/include/asm/simd.h
+        +++ b/compat/simd-asm/include/asm/simd.h
+        @@ -5,12 +5,18 @@
+         #include <asm/fpu/api.h>
+         #endif
+         
+        +#ifdef AWG_PRIVATE_KMODE_NEON
+        +extern bool awg_kmode_neon_enabled;
+        +#endif
+        +
+         static __must_check inline bool may_use_simd(void)
+         {
+         #if defined(CONFIG_X86_64)
+         	return irq_fpu_usable();
+         #elif defined(CONFIG_ARM64) && defined(CONFIG_KERNEL_MODE_NEON)
+         	return true;
+        +#elif defined(CONFIG_ARM) && defined(AWG_PRIVATE_KMODE_NEON)
+        +	return awg_kmode_neon_enabled && !in_nmi() && !in_irq() && !in_serving_softirq();
+         #elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)
+         	return !in_nmi() && !in_irq() && !in_serving_softirq();
+         #else
+        diff -ruN a/compat/udp_tunnel/udp_tunnel.c b/compat/udp_tunnel/udp_tunnel.c
+        --- a/compat/udp_tunnel/udp_tunnel.c
+        +++ b/compat/udp_tunnel/udp_tunnel.c
+        @@ -9,6 +9,11 @@
+         #include <net/udp.h>
+         #include <net/udp_tunnel.h>
+         
+        +/* compat.h maps the 7.1.5+ sk-based API onto the socket-based one; the
+        + * definitions below are the socket-based implementation itself. */
+        +#undef setup_udp_tunnel_sock
+        +#undef udp_tunnel_sock_release
+        +
+         #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 0)
+         #define __sk_user_data(sk) ((*((void __rcu **)&(sk)->sk_user_data)))
+         #define rcu_dereference_sk_user_data(sk) rcu_dereference(__sk_user_data((sk)))
+        diff -ruN a/crypto/zinc/selftest/blake2s.c b/crypto/zinc/selftest/blake2s.c
+        --- a/crypto/zinc/selftest/blake2s.c
+        +++ b/crypto/zinc/selftest/blake2s.c
+        @@ -2072,7 +2072,7 @@
+         		buf[i] = (u8)i;
+         
+         	for (i = 0; i < ARRAY_SIZE(blake2s_keyed_testvecs); ++i) {
+        -		blake2s(hash, buf, key, BLAKE2S_HASH_SIZE, i, BLAKE2S_KEY_SIZE);
+        +		(blake2s)(hash, buf, key, BLAKE2S_HASH_SIZE, i, BLAKE2S_KEY_SIZE);
+         		if (memcmp(hash, blake2s_keyed_testvecs[i], BLAKE2S_HASH_SIZE)) {
+         			pr_err("blake2s keyed self-test %zu: FAIL\n", i + 1);
+         			success = false;
+        @@ -2080,8 +2080,8 @@
+         		}
+         	}
+         
+         	for (i = 0; i < ARRAY_SIZE(blake2s_testvecs); ++i) {
+        -		blake2s(hash, buf, NULL, BLAKE2S_HASH_SIZE, i, 0);
+        +		(blake2s)(hash, buf, NULL, BLAKE2S_HASH_SIZE, i, 0);
+         		if (memcmp(hash, blake2s_testvecs[i], BLAKE2S_HASH_SIZE)) {
+         			pr_err("blake2s unkeyed self-test %zu: FAIL\n", i + i);
+         			success = false;
+        diff -ruN a/junk.c b/junk.c
+        --- a/junk.c
+        +++ b/junk.c
+        @@ -252,7 +252,7 @@
+             int pkt_size, mods_size;
+             struct jp_tag *tag, *tmp;
+             struct jp_modifier *mod;
+        -    char* buf, *desc;
+        +    char *buf = NULL, *desc;
+             LIST_HEAD(head);
+         
+             if (str == NULL)
+        diff -ruN a/Kbuild b/Kbuild
+        --- a/Kbuild
+        +++ b/Kbuild
+        @@ -8,6 +8,12 @@
+         ccflags-$(if $(WIREGUARD_VERSION),y,) += -D'WIREGUARD_VERSION="$(WIREGUARD_VERSION)"'
+         ccflags-$(if $(OMIT_ENDPOINTS),y,) += -D'OMIT_ENDPOINTS="$(OMIT_ENDPOINTS)"'
+         
+        +ccflags-y += -DCONFIG_KERNEL_MODE_NEON=1 -DAWG_PRIVATE_KMODE_NEON
+        +asflags-y += -DCONFIG_KERNEL_MODE_NEON=1
+        +
+        +# Linux 3.10 Balong: run zinc init and self-tests at module load
+        +ccflags-y += -DCOMPAT_INIT_CRYPTO -DCONFIG_ZINC_SELFTEST=1
+        +
+         amneziawg-y := main.o noise.o device.o peer.o timers.o queueing.o send.o receive.o socket.o peerlookup.o allowedips.o ratelimiter.o cookie.o netlink.o junk.o header_protection.o
+         
+         ifeq ($(shell [ $(VERSION) -lt 6 -o \( $(VERSION) -eq 6 -a $(PATCHLEVEL) -lt 1 \) ] && echo y),y)
+        @@ -20,5 +26,6 @@
+         	include $(src)/crypto/Kbuild.include
+         endif
+         include $(src)/compat/Kbuild.include
+        +amneziawg-y += compat/neon-arm/kmode_neon.o
+         
+         obj-$(if $(KBUILD_EXTMOD),m,$(CONFIG_AMNEZIAWG)) := amneziawg.o
+        diff -ruN a/main.c b/main.c
+        --- a/main.c
+        +++ b/main.c
+        @@ -11,16 +11,27 @@
+         #include "ratelimiter.h"
+         #include "netlink.h"
+         #include "uapi/wireguard.h"
+        +#ifdef COMPAT_INIT_CRYPTO
+        +#include "crypto/zinc.h"
+        +#endif
+         
+         #include <linux/init.h>
+         #include <linux/module.h>
+         #include <net/genetlink.h>
+         #include <net/rtnetlink.h>
+         
+        +#ifdef AWG_PRIVATE_KMODE_NEON
+        +void awg_kmode_neon_init(void);
+        +#endif
+        +
+         static int __init wg_mod_init(void)
+         {
+         	int ret;
+         
+        +#ifdef AWG_PRIVATE_KMODE_NEON
+        +	awg_kmode_neon_init();
+        +#endif
+        +
+         #ifdef COMPAT_INIT_CRYPTO
+         	if ((ret = chacha20_mod_init()) || (ret = poly1305_mod_init()) ||
+         	    (ret = chacha20poly1305_mod_init()) || (ret = blake2s_mod_init()) ||
+        diff -ruN a/socket.c b/socket.c
+        --- a/socket.c
+        +++ b/socket.c
+        @@ -137,7 +137,12 @@
+         			if (cache)
+         				dst_cache_reset(cache);
+         		}
+        +#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 0)
+        +		/* 3.10: ip6_dst_lookup_flow() has no net argument; use the compat ipv6_stub path */
+        +		dst = ipv6_stub->ipv6_dst_lookup_flow(sock_net(sock), sock, &fl, NULL);
+        +#else
+         		dst = ip6_dst_lookup_flow(sock_net(sock), sock, &fl, NULL);
+        +#endif
+         		if (IS_ERR(dst)) {
+         			ret = PTR_ERR(dst);
+         			net_dbg_ratelimited("%s: No route to %pISpfsc, error %d\n",
+        --- a/send.c
+        +++ b/send.c
+        @@ -407,9 +407,14 @@
+         
+         #ifdef COMPAT_CRYPTO_IS_ZINC
+         		simd_relax(&simd_context);
+        -#endif
+        +		/* On 3.10 cond_resched() ignores preempt_count: never schedule
+        +		 * with NEON held. simd_relax() or simd_put() will reschedule. */
+        +		if (need_resched() && !(simd_context & HAVE_SIMD_IN_USE))
+        +			cond_resched();
+        +#else
+         		if (need_resched())
+         			cond_resched();
+        +#endif
+         	}
+         #ifdef COMPAT_CRYPTO_IS_ZINC
+         	simd_put(&simd_context);
+        --- a/receive.c
+        +++ b/receive.c
+        @@ -609,9 +609,14 @@
+         		wg_queue_enqueue_per_peer_rx(skb, state);
+         #ifdef COMPAT_CRYPTO_IS_ZINC
+         		simd_relax(&simd_context);
+        -#endif
+        +		/* On 3.10 cond_resched() ignores preempt_count: never schedule
+        +		 * with NEON held. simd_relax() or simd_put() will reschedule. */
+        +		if (need_resched() && !(simd_context & HAVE_SIMD_IN_USE))
+        +			cond_resched();
+        +#else
+         		if (need_resched())
+         			cond_resched();
+        +#endif
+         	}
+         
+         #ifdef COMPAT_CRYPTO_IS_ZINC
+        AWG_PATCH_EOF
+        if patch -p1 --dry-run --forward --ignore-whitespace < /tmp/3.10-compat.patch; then
+          patch -p1 --forward --ignore-whitespace < /tmp/3.10-compat.patch
+          echo "Patch applied to $KMOD_TAG"
+        else
+          echo "ERROR: patch does not apply cleanly to $KMOD_TAG (see Hunk FAILED lines above)"
+          exit 1
+        fi
+
+    - name: Build AmneziaWG Kernel Module
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        echo "CONFIG_ZINC_ARCH_ARM=$ZINC_ARM (n = generic C crypto, no ARM asm)"
+        cd "$KERNEL_DIR"
+        make -C . M=drivers/net/amneziawg ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ CC=arm-linux-gnueabihf-gcc CONFIG_ZINC_ARCH_ARM="$ZINC_ARM" V=1 modules 2>&1 | tee /tmp/build.log
+
+    - name: Show Kernel Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Kernel build warnings/errors ==="
+        grep -iE "warning|error" /tmp/build.log || echo "No warnings or errors found"
+
+    - name: Strip and Verify Kernel Module
+      if: success()
+      shell: bash
+      run: |
+        export PATH=/opt/gcc-4.7/bin:$PATH
+        cd "$KERNEL_DIR"
+        MODULE_PATH=$(find -L drivers/net/amneziawg -name "amneziawg.ko" -type f 2>/dev/null | head -1)
+        if [ -z "$MODULE_PATH" ]; then echo "Module not found!"; exit 1; fi
+        cp "$MODULE_PATH" "$GITHUB_WORKSPACE/amneziawg.ko"
+        arm-linux-gnueabihf-strip --strip-unneeded "$GITHUB_WORKSPACE/amneziawg.ko"
+        file "$GITHUB_WORKSPACE/amneziawg.ko"
+        modinfo "$GITHUB_WORKSPACE/amneziawg.ko" 2>/dev/null | grep -E "vermagic|version" || true
+
+        echo "=== Undefined symbols the running kernel must export ==="
+        arm-linux-gnueabihf-nm "$GITHUB_WORKSPACE/amneziawg.ko" | grep ' U ' | awk '{print $2}' | sort > /tmp/undefined-symbols.txt
+        wc -l /tmp/undefined-symbols.txt
+
+        echo "=== Symbols not exported by this kernel tree (Module.symvers) ==="
+        if [ -f Module.symvers ]; then
+          awk '{print $2}' Module.symvers | sort > /tmp/exported.txt
+          comm -23 /tmp/undefined-symbols.txt /tmp/exported.txt | tee /tmp/missing-symbols.txt || true
+        fi
+        cp /tmp/undefined-symbols.txt /tmp/missing-symbols.txt "$GITHUB_WORKSPACE/" 2>/dev/null || true
+
+    - name: Clone and Build awg tool (static ARMv7, musl)
+      shell: bash
+      run: |
+        TOOLS_DIR="amneziawg-tools-src"
+
+        echo "=== Downloading musl toolchain from landley.net ==="
+        MUSL_URL="https://landley.net/bin/toolchains/latest/armv7l-linux-musleabihf-cross.tar.xz"
+        wget -q "$MUSL_URL" -O /tmp/musl-cross.tar.xz
+        tar -xJf /tmp/musl-cross.tar.xz -C /opt/
+        export PATH="/opt/armv7l-linux-musleabihf-cross/bin:$PATH"
+        armv7l-linux-musleabihf-gcc --version
+
+        echo "=== Cloning amneziawg-tools $TOOLS_TAG ==="
+        git clone --branch "$TOOLS_TAG" --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git "../$TOOLS_DIR"
+        cd "../$TOOLS_DIR/src"
+
+        echo "=== Checking for wireguard.h ==="
+        find . -name "wireguard.h" -type f 2>/dev/null || echo "wireguard.h NOT FOUND"
+
+        if [ -f uapi/linux/linux/wireguard.h ] && [ ! -f uapi/linux/wireguard.h ]; then
+          ln -s linux/wireguard.h uapi/linux/wireguard.h
+          echo "Created symlink: uapi/linux/wireguard.h -> linux/wireguard.h"
+        fi
+
+        echo "=== Building awg statically for ARMv7 (musl) ==="
+        export CC=armv7l-linux-musleabihf-gcc
+        export CFLAGS="-Os -flto -ffunction-sections -fdata-sections -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -static"
+        export LDFLAGS="-static -s -Wl,--gc-sections"
+
+        make CC="$CC" \
+             LDFLAGS="$LDFLAGS" \
+             RUNSTATEDIR=/var/run \
+             WITH_WGQUICK=yes \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
+             2>&1 | tee /tmp/tools-build.log
+
+        echo "=== Installing awg to output directory ==="
+        make install \
+             CC="$CC" \
+             LDFLAGS="$LDFLAGS" \
+             RUNSTATEDIR=/var/run \
+             WITH_WGQUICK=yes \
+             WITH_BASHCOMPLETION=no \
+             WITH_SYSTEMDUNITS=no \
+             PREFIX=/usr \
+             DESTDIR="$GITHUB_WORKSPACE/awg-tools-out" \
+             2>&1 | tee -a /tmp/tools-build.log
+
+        echo "=== Verifying awg binary ==="
+        file "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
+        ls -la "$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg" || true
+
+    - name: Show awg binary size (summary)
+      if: success()
+      shell: bash
+      run: |
+        AWG_BIN="$GITHUB_WORKSPACE/awg-tools-out/usr/bin/awg"
+        if [ ! -f "$AWG_BIN" ]; then
+          echo "ERROR: awg binary not found!"; exit 1
+        fi
+        file "$AWG_BIN"
+        echo "Size (human readable): $(du -h "$AWG_BIN" | cut -f1)"
+        echo "Size (bytes): $(stat -c %s "$AWG_BIN")"
+
+    - name: Show Tools Build Log Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "=== Tools build warnings/errors ==="
+        grep -iE "warning|error" /tmp/tools-build.log || echo "No warnings or errors found"
+
+    - name: Package awg tool (awg only) into tar.gz
+      if: success()
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p awg-tools-release
+        if [ ! -f awg-tools-out/usr/bin/awg ]; then
+          echo "ERROR: awg binary not found!"
+          exit 1
+        fi
+        cp awg-tools-out/usr/bin/awg awg-tools-release/
+        chmod +x awg-tools-release/awg
+
+        tar -czf awg-tools-armv7.tar.gz -C awg-tools-release .
+        ls -la awg-tools-armv7.tar.gz
+        tar -tzf awg-tools-armv7.tar.gz
+
+    - name: Upload Kernel Module Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: amneziawg-ko-${{ github.event.inputs.version }}
+        path: amneziawg.ko
+        if-no-files-found: error
+
+    - name: Upload awg Tool Artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: awg-tool-${{ github.event.inputs.version }}
+        path: awg-tools-armv7.tar.gz
+        if-no-files-found: error
+
+    - name: Upload Build Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.event.inputs.version }}
+        path: |
+          /tmp/build.log
+          /tmp/tools-build.log
+          /tmp/undefined-symbols.txt
+          /tmp/missing-symbols.txt
+        if-no-files-found: warn
+
+    # ================= RELEASE =================
+    - name: Create Tag
+      if: success()
+      shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -f "$VERSION"
+        git push origin -f "$VERSION"
+
+    - name: Create Release
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.version }}
+        name: AmneziaWG E5885 ${{ github.event.inputs.version }}
+        overwrite: true
+        files: |
+          amneziawg.ko
+          awg-tools-armv7.tar.gz
+        body: |
+          AmneziaWG for Huawei E5885 (kernel 3.10)
+
+          Built from upstream tags:
+          - kernel module: `${{ env.KMOD_TAG }}`
+          - crypto: ARM asm = `${{ env.ZINC_ARM }}` (n = generic C)
+          - awg tools: `${{ env.TOOLS_TAG }}`
+
+          **Contents:**
+          - `amneziawg.ko` — Kernel module (ARMv7, kernel 3.10 + compat patch, private kernel-mode NEON)
+          - `awg-tools-armv7.tar.gz` — Static `awg` binary for ARMv7 (musl)
+
+          **Note:** `awg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only).
+
+          **Install:**
+          ```sh
+          insmod /system/modules/amneziawg.ko        # add neon=0 to disable NEON
+          tar -xzf awg-tools-armv7.tar.gz -C /usr/bin/
+          chmod +x /usr/bin/awg
+          awg --version
+          ```
