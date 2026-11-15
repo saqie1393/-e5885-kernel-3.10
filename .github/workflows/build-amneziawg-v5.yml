@@ -10,7 +10,7 @@ on:
       kmod_tag:
         description: 'amneziawg-linux-kernel-module tag ("latest" = newest tag)'
         required: true
-        default: 'v3.1.20260906'
+        default: 'v3.1.20261113'
       tools_tag:
         description: 'amneziawg-tools tag ("latest" = newest tag)'
         required: true
