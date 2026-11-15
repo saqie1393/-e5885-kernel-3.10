@@ -70,7 +70,7 @@ jobs:
       run: |
         cd "$KERNEL_DIR"
         AWG_SRC="drivers/net/amneziawg"
-        PATCH_FILE="$GITHUB_WORKSPACE/patches/3.10-compat-neon.patch"
+        PATCH_FILE="$GITHUB_WORKSPACE/patches/3.10-compat.patch"
 
         echo "=== Trying to apply NEON patch ==="
         if [ -f "$PATCH_FILE" ]; then
