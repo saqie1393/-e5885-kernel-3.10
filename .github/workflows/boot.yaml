@@ -22,7 +22,7 @@ jobs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget xz-utils python3
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev bc git file patch wget xz-utils
 
     - name: Extract Linaro GCC 4.7
       shell: bash
@@ -145,166 +145,39 @@ jobs:
         fi
         echo "=== All compatibility handling done ==="
 
-    - name: Add NEON compatibility files
+    - name: Apply NEON compatibility patch
       shell: bash
       run: |
         cd "$KERNEL_DIR"
         AWG_SRC="drivers/net/amneziawg"
+        NEON_PATCH="$GITHUB_WORKSPACE/patches/3.10-neon-compat.patch"
         NEON_DIR="$GITHUB_WORKSPACE/patches/neon"
 
-        echo "=== 1. Copying kmode_neon.c ==="
+        echo "=== 1. Copying new NEON files ==="
         mkdir -p "$AWG_SRC/compat/neon-arm"
-        cp "$NEON_DIR/kmode_neon.c" "$AWG_SRC/compat/neon-arm/kmode_neon.c"
-        echo "✅ kmode_neon.c copied"
-
-        echo "=== 2. Copying compat chacha.h ==="
         mkdir -p "$AWG_SRC/compat/crypto/chacha/include/crypto"
+        cp "$NEON_DIR/kmode_neon.c" "$AWG_SRC/compat/neon-arm/kmode_neon.c"
         cp "$NEON_DIR/chacha.h" "$AWG_SRC/compat/crypto/chacha/include/crypto/chacha.h"
-        echo "✅ chacha.h copied"
+        echo "✅ kmode_neon.c and chacha.h copied"
 
-        echo "=== 3. Updating compat/simd-asm/include/asm/simd.h ==="
-        SIMD_H="$AWG_SRC/compat/simd-asm/include/asm/simd.h"
-        if [ -f "$SIMD_H" ]; then
-          if ! grep -q 'AWG_PRIVATE_KMODE_NEON' "$SIMD_H"; then
-            python3 -c "
-import sys
-path = sys.argv[1]
-with open(path) as f:
-    c = f.read()
-old = '''static __must_check inline bool may_use_simd(void)
-{
-#if defined(CONFIG_X86_64)
-\treturn irq_fpu_usable();
-#elif defined(CONFIG_ARM64) && defined(CONFIG_KERNEL_MODE_NEON)
-\treturn true;
-#elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)
-\treturn !in_nmi() && !in_irq() && !in_serving_softirq();
-#else
-\treturn false;
-#endif
-}'''
-new = '''#ifdef AWG_PRIVATE_KMODE_NEON
-extern bool awg_kmode_neon_enabled;
-#endif
-
-static __must_check inline bool may_use_simd(void)
-{
-#if defined(CONFIG_X86_64)
-\treturn irq_fpu_usable();
-#elif defined(CONFIG_ARM64) && defined(CONFIG_KERNEL_MODE_NEON)
-\treturn true;
-#elif defined(CONFIG_ARM) && defined(AWG_PRIVATE_KMODE_NEON)
-\treturn awg_kmode_neon_enabled && !in_nmi() && !in_irq() && !in_serving_softirq();
-#elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)
-\treturn !in_nmi() && !in_irq() && !in_serving_softirq();
-#else
-\treturn false;
-#endif
-}'''
-if old not in c:
-    print('ERROR: simd.h pattern not found', file=sys.stderr)
-    sys.exit(1)
-c = c.replace(old, new)
-with open(path, 'w') as f:
-    f.write(c)
-" "$SIMD_H"
-            echo "✅ simd.h updated"
+        echo "=== 2. Applying NEON compat patch ==="
+        if [ -f "$NEON_PATCH" ]; then
+          if git apply --check -p1 --directory="$AWG_SRC" "$NEON_PATCH" 2>/dev/null; then
+            git apply -p1 --directory="$AWG_SRC" "$NEON_PATCH"
+            echo "✅ NEON patch applied via git apply"
+          elif patch -p1 --dry-run --forward -d "$AWG_SRC" < "$NEON_PATCH" >/dev/null 2>&1; then
+            patch -p1 --forward -d "$AWG_SRC" < "$NEON_PATCH"
+            echo "✅ NEON patch applied via patch(1)"
           else
-            echo "ℹ️ simd.h already contains NEON changes"
+            echo "❌ NEON patch failed to apply!"
+            exit 1
           fi
         else
-          echo "⚠️ simd.h not found, skipping"
+          echo "❌ NEON patch file not found: $NEON_PATCH"
+          exit 1
         fi
 
-        echo "=== 4. Updating Kbuild (NEON flags + kmode_neon.o) ==="
-        KBUILD="$AWG_SRC/Kbuild"
-        if [ -f "$KBUILD" ]; then
-          if ! grep -q 'AWG_PRIVATE_KMODE_NEON' "$KBUILD"; then
-            sed -i '/^amneziawg-y :=/i ccflags-y += -DCONFIG_KERNEL_MODE_NEON=1 -DAWG_PRIVATE_KMODE_NEON\nasflags-y += -DCONFIG_KERNEL_MODE_NEON=1\n\n# Linux 3.10 Balong: run zinc init and self-tests at module load\nccflags-y += -DCOMPAT_INIT_CRYPTO -DCONFIG_ZINC_SELFTEST=1\n' "$KBUILD"
-            sed -i '/^include \$(src)\/compat\/Kbuild.include/a amneziawg-y += compat/neon-arm/kmode_neon.o' "$KBUILD"
-            echo "✅ Kbuild updated"
-          else
-            echo "ℹ️ Kbuild already contains NEON changes"
-          fi
-        else
-          echo "⚠️ Kbuild not found, skipping"
-        fi
-
-        echo "=== 5. Updating main.c (awg_kmode_neon_init call) ==="
-        MAIN_C="$AWG_SRC/main.c"
-        if [ -f "$MAIN_C" ]; then
-          if ! grep -q 'awg_kmode_neon_init' "$MAIN_C"; then
-            python3 -c "
-import sys
-path = sys.argv[1]
-with open(path) as f:
-    c = f.read()
-c = c.replace(
-    '#include <net/rtnetlink.h>\n',
-    '#include <net/rtnetlink.h>\n\n#ifdef AWG_PRIVATE_KMODE_NEON\nvoid awg_kmode_neon_init(void);\n#endif\n',
-    1)
-c = c.replace(
-    'static int __init wg_mod_init(void)\n{\n\tint ret;\n',
-    'static int __init wg_mod_init(void)\n{\n\tint ret;\n\n#ifdef AWG_PRIVATE_KMODE_NEON\n\tawg_kmode_neon_init();\n#endif\n',
-    1)
-with open(path, 'w') as f:
-    f.write(c)
-" "$MAIN_C"
-            echo "✅ main.c updated"
-          else
-            echo "ℹ️ main.c already contains NEON changes"
-          fi
-        else
-          echo "⚠️ main.c not found, skipping"
-        fi
-
-        echo "=== 6. Updating socket.c (ip6_dst_lookup_flow) ==="
-        SOCKET_C="$AWG_SRC/socket.c"
-        if [ -f "$SOCKET_C" ] && ! grep -q 'ipv6_stub->ipv6_dst_lookup_flow' "$SOCKET_C"; then
-          sed -i 's|dst = ip6_dst_lookup_flow(sock_net(sock), sock, \&fl, NULL);|#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 0)\n\t\tdst = ipv6_stub->ipv6_dst_lookup_flow(sock_net(sock), sock, \&fl, NULL);\n#else\n\t\tdst = ip6_dst_lookup_flow(sock_net(sock), sock, \&fl, NULL);\n#endif|' "$SOCKET_C"
-          echo "✅ socket.c updated"
-        else
-          echo "ℹ️ socket.c already updated or not found"
-        fi
-
-        echo "=== 7. Updating send.c / receive.c (cond_resched with NEON) ==="
-        for f in send.c receive.c; do
-          F="$AWG_SRC/$f"
-          [ -f "$F" ] || continue
-          if ! grep -q 'never schedule' "$F"; then
-            python3 -c "
-import sys
-path = sys.argv[1]
-with open(path) as f:
-    c = f.read()
-c = c.replace(
-    '''#ifdef COMPAT_CRYPTO_IS_ZINC
-\t\tsimd_relax(&simd_context);
-#endif
-\t\tif (need_resched())
-\t\t\tcond_resched();
-#ifdef COMPAT_CRYPTO_IS_ZINC''',
-    '''#ifdef COMPAT_CRYPTO_IS_ZINC
-\t\tsimd_relax(&simd_context);
-\t\t/* On 3.10 cond_resched() ignores preempt_count: never schedule
-\t\t * with NEON held. simd_relax() or simd_put() will reschedule. */
-\t\tif (need_resched() && !(simd_context & HAVE_SIMD_IN_USE))
-\t\t\tcond_resched();
-#else
-\t\tif (need_resched())
-\t\t\tcond_resched();
-#endif
-#ifdef COMPAT_CRYPTO_IS_ZINC''')
-with open(path, 'w') as f:
-    f.write(c)
-" "$F"
-            echo "✅ $f updated"
-          else
-            echo "ℹ️ $f already updated"
-          fi
-        done
-
-        echo "=== NEON compatibility files added ==="
+        echo "=== NEON compatibility complete ==="
 
     - name: Build AmneziaWG Kernel Module
       shell: bash
@@ -485,13 +358,4 @@ with open(path, 'w') as f:
 
           **Contents:**
           - `amneziawg.ko` — Kernel module (vermagic 3.10.100+ ARMv7)
-          - `awg-tools-armv7.tar.gz` — Static `awg` binary for ARMv7 (musl, ~120 KB)
-
-          **Note:** `awg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only).
-
-          **Install:**
-          ```sh
-          insmod /system/modules/amneziawg.ko
-          tar -xzf awg-tools-armv7.tar.gz -C /usr/bin/
-          chmod +x /usr/bin/awg
-          awg --version
+          - `awg-tools-armv
