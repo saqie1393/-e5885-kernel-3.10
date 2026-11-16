@@ -145,50 +145,20 @@ jobs:
         fi
         echo "=== All compatibility handling done ==="
 
-    - name: Apply NEON compatibility patch
+    - name: Apply Kernel NEON Patch
       shell: bash
       run: |
-        cd "$KERNEL_DIR"
-        AWG_SRC="drivers/net/amneziawg"
-        NEON_PATCH="$GITHUB_WORKSPACE/patches/3.10-neon-compat.patch"
-        NEON_DIR="$GITHUB_WORKSPACE/patches/neon"
+        cd "$AWG_SRC"
 
-        echo "=== 1. Copying new NEON files ==="
-        mkdir -p "$AWG_SRC/compat/neon-arm"
-        mkdir -p "$AWG_SRC/compat/crypto/chacha/include/crypto"
-        cp "$NEON_DIR/kmode_neon.c" "$AWG_SRC/compat/neon-arm/kmode_neon.c"
-        cp "$NEON_DIR/chacha.h" "$AWG_SRC/compat/crypto/chacha/include/crypto/chacha.h"
-        echo "✅ kmode_neon.c and chacha.h copied"
+        PATCH="$GITHUB_WORKSPACE/patches/neon-only.patch"
 
-        echo "=== 2. Applying NEON compat patch via patch(1) ==="
-        if [ ! -f "$NEON_PATCH" ]; then
-          echo "❌ NEON patch file not found: $NEON_PATCH"
-          exit 1
-        fi
+        echo "Checking NEON patch..."
+        git apply --check "$PATCH"
 
-        # patch(1) -d se seedha AWG_SRC mein jaata hai, git worktree root ka issue nahi
-        # -p1 : a/ aur b/ prefix strip karo
-        # --forward : already applied hunks ko skip karo (error mat do)
-        if patch -p1 --forward --dry-run -d "$AWG_SRC" < "$NEON_PATCH" > /tmp/neon-patch-dryrun.log 2>&1; then
-          patch -p1 --forward -d "$AWG_SRC" < "$NEON_PATCH"
-          echo "✅ NEON patch applied via patch(1)"
-        else
-          echo "❌ NEON patch dry-run failed. Log:"
-          cat /tmp/neon-patch-dryrun.log
-          echo ""
-          echo "=== Trying git apply as fallback (without --directory) ==="
-          cd "$AWG_SRC"
-          if git apply --check -p1 "$NEON_PATCH" 2>/dev/null; then
-            git apply -p1 "$NEON_PATCH"
-            echo "✅ NEON patch applied via git apply (cwd=$AWG_SRC)"
-          else
-            echo "❌ Both patch(1) and git apply failed."
-            echo "Check that the patch file matches the current source tree."
-            exit 1
-          fi
-        fi
+        echo "Applying NEON patch..."
+        git apply "$PATCH"
 
-        echo "=== NEON compatibility complete ==="
+        echo "Kernel NEON patch applied successfully"
 
     - name: Build AmneziaWG Kernel Module
       shell: bash
@@ -369,4 +339,14 @@ jobs:
 
           **Contents:**
           - `amneziawg.ko` — Kernel module (vermagic 3.10.100+ ARMv7)
-          - `awg-tools-armv
+          - `awg-tools-armv7.tar.gz` — Static `awg` binary for ARMv7 (musl, ~120 KB)
+
+          **Note:** `awg-quick` is intentionally excluded because it requires `bash`, which is not available on E5885 (BusyBox `ash` only).
+
+          **Install:**
+          ```sh
+          insmod /system/modules/amneziawg.ko
+          tar -xzf awg-tools-armv7.tar.gz -C /usr/bin/
+          chmod +x /usr/bin/awg
+          awg --version
+          ```
