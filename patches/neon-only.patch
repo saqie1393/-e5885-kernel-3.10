@@ -1,0 +1,153 @@
+diff --git a/Kbuild b/Kbuild
+index 0000000..1111111 100644
+--- a/Kbuild
++++ b/Kbuild
+@@ -8,6 +8,9 @@
+ ccflags-$(if $(WIREGUARD_VERSION),y,) += -D'WIREGUARD_VERSION="$(WIREGUARD_VERSION)"'
+ ccflags-$(if $(OMIT_ENDPOINTS),y,) += -D'OMIT_ENDPOINTS="$(OMIT_ENDPOINTS)"'
+ 
++ccflags-y += -DCONFIG_KERNEL_MODE_NEON=1 -DAWG_PRIVATE_KMODE_NEON
++asflags-y += -DCONFIG_KERNEL_MODE_NEON=1
++
+ amneziawg-y := main.o noise.o device.o peer.o timers.o queueing.o send.o receive.o socket.o peerlookup.o allowedips.o ratelimiter.o cookie.o netlink.o junk.o header_protection.o
+@@ -26,3 +29,4 @@
+ endif
+ include $(src)/compat/Kbuild.include
++amneziawg-y += compat/neon-arm/kmode_neon.o
+diff --git a/compat/simd-asm/include/asm/simd.h b/compat/simd-asm/include/asm/simd.h
+--- a/compat/simd-asm/include/asm/simd.h
++++ b/compat/simd-asm/include/asm/simd.h
+@@ -5,12 +5,18 @@
+ #include <asm/fpu/api.h>
+ #endif
+ 
++#ifdef AWG_PRIVATE_KMODE_NEON
++extern bool awg_kmode_neon_enabled;
++#endif
++
+ static __must_check inline bool may_use_simd(void)
+ {
+ #if defined(CONFIG_X86_64)
+ 	return irq_fpu_usable();
+ #elif defined(CONFIG_ARM64) && defined(CONFIG_KERNEL_MODE_NEON)
+ 	return true;
++#elif defined(CONFIG_ARM) && defined(AWG_PRIVATE_KMODE_NEON)
++	return awg_kmode_neon_enabled && !in_nmi() && !in_irq() && !in_serving_softirq();
+ #elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)
+ 	return !in_nmi() && !in_irq() && !in_serving_softirq();
+ #else
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -11,6 +11,10 @@
+ #include "ratelimiter.h"
+ #include "netlink.h"
+ #include "uapi/wireguard.h"
++#ifdef AWG_PRIVATE_KMODE_NEON
++void awg_kmode_neon_init(void);
++#endif
+ 
+ #include <linux/init.h>
+ #include <linux/module.h>
+@@ -20,6 +24,10 @@
+ {
+ 	int ret;
+ 
++#ifdef AWG_PRIVATE_KMODE_NEON
++	awg_kmode_neon_init();
++#endif
++
+ #ifdef COMPAT_INIT_CRYPTO
+diff --git a/compat/neon-arm/kmode_neon.c b/compat/neon-arm/kmode_neon.c
+new file mode 100644
+--- /dev/null
++++ b/compat/neon-arm/kmode_neon.c
+@@ -0,0 +1,88 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Private kernel-mode NEON for kernels built without CONFIG_KERNEL_MODE_NEON.
++ * Same logic as kernel_neon_begin()/kernel_neon_end() of arch/arm/vfp/vfpmodule.c
++ * in this very kernel tree, using vfp_current_hw_state and vfp_save_state found
++ * through kallsyms_lookup_name(). Uniprocessor only.
++ *
++ * The in_interrupt() BUG_ON of the original is not kept: may_use_simd() below
++ * refuses hard and soft irq context, and nothing else in this kernel touches
++ * NEON from BH-disabled sections.
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/kallsyms.h>
++#include <linux/preempt.h>
++#include <linux/sched.h>
++#include <linux/smp.h>
++#include <asm/thread_info.h>
++#include <asm/vfp.h>
++
++#ifdef CONFIG_SMP
++#error "kmode_neon.c supports uniprocessor kernels only"
++#endif
++
++#define awg_fmrx(_vfp_) ({ u32 __v; \
++	asm("mrc p10, 7, %0, " #_vfp_ ", cr0, 0" : "=r" (__v) : : "cc"); __v; })
++#define awg_fmxr(_vfp_, _var_) \
++	asm("mcr p10, 7, %0, " #_vfp_ ", cr0, 0" : : "r" (_var_) : "cc")
++
++static bool neon = true;
++module_param(neon, bool, 0444);
++MODULE_PARM_DESC(neon, "Use kernel-mode NEON for crypto (default: on)");
++
++bool awg_kmode_neon_enabled __read_mostly;
++
++static union vfp_state **awg_vfp_hw_state __read_mostly;
++static void (*awg_vfp_save_state)(void *location, u32 fpexc) __read_mostly;
++
++void kernel_neon_begin(void)
++{
++	struct thread_info *thread = current_thread_info();
++	union vfp_state **hw;
++	unsigned int cpu;
++	u32 fpexc;
++
++	cpu = get_cpu();
++	hw = &awg_vfp_hw_state[cpu];
++
++	fpexc = awg_fmrx(cr8) | FPEXC_EN;
++	awg_fmxr(cr8, fpexc);
++
++	/* Save the userland NEON/VFP state; under UP the owner may be another task. */
++	if (*hw == &thread->vfpstate)
++		awg_vfp_save_state(&thread->vfpstate, fpexc);
++	else if (*hw != NULL)
++		awg_vfp_save_state(*hw, fpexc);
++	*hw = NULL;
++}
++
++void kernel_neon_end(void)
++{
++	awg_fmxr(cr8, awg_fmrx(cr8) & ~FPEXC_EN);
++	put_cpu();
++}
++
++void __init awg_kmode_neon_init(void)
++{
++	unsigned long hw, save;
++
++	if (!neon) {
++		pr_info("kernel-mode NEON: off (neon=0)\n");
++		return;
++	}
++	if (!(elf_hwcap & HWCAP_NEON)) {
++		pr_info("kernel-mode NEON: off (no NEON in hwcap)\n");
++		return;
++	}
++	hw = kallsyms_lookup_name("vfp_current_hw_state");
++	save = kallsyms_lookup_name("vfp_save_state");
++	if (!hw || !save) {
++		pr_warn("kernel-mode NEON: off (vfp symbols not found)\n");
++		return;
++	}
++	awg_vfp_hw_state = (union vfp_state **)hw;
++	awg_vfp_save_state = (void (*)(void *, u32))save;
++	awg_kmode_neon_enabled = true;
++	pr_info("kernel-mode NEON: on\n");
++}
