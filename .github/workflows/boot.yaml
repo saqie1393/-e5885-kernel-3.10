@@ -144,7 +144,7 @@ jobs:
           echo "=== Inline fixes applied ==="
         fi
         echo "=== All compatibility handling done ==="
-        - name: Add private kernel-mode NEON (3.10 UP, no CONFIG_KERNEL_MODE_NEON)
+    - name: Add private kernel-mode NEON (3.10 UP, no CONFIG_KERNEL_MODE_NEON)
       shell: bash
       run: |
         set -e
