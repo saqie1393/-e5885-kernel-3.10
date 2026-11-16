@@ -2,7 +2,7 @@ diff --git a/Kbuild b/Kbuild
 index 0000000..1111111 100644
 --- a/Kbuild
 +++ b/Kbuild
-@@ -8,6 +8,9 @@
+@@ -8,4 +8,7 @@
  ccflags-$(if $(WIREGUARD_VERSION),y,) += -D'WIREGUARD_VERSION="$(WIREGUARD_VERSION)"'
  ccflags-$(if $(OMIT_ENDPOINTS),y,) += -D'OMIT_ENDPOINTS="$(OMIT_ENDPOINTS)"'
  
@@ -10,7 +10,7 @@ index 0000000..1111111 100644
 +asflags-y += -DCONFIG_KERNEL_MODE_NEON=1
 +
  amneziawg-y := main.o noise.o device.o peer.o timers.o queueing.o send.o receive.o socket.o peerlookup.o allowedips.o ratelimiter.o cookie.o netlink.o junk.o header_protection.o
-@@ -26,3 +29,4 @@
+@@ -26,2 +29,3 @@
  endif
  include $(src)/compat/Kbuild.include
 +amneziawg-y += compat/neon-arm/kmode_neon.o
@@ -39,7 +39,7 @@ diff --git a/compat/simd-asm/include/asm/simd.h b/compat/simd-asm/include/asm/si
 diff --git a/main.c b/main.c
 --- a/main.c
 +++ b/main.c
-@@ -11,6 +11,10 @@
+@@ -11,6 +11,9 @@
  #include "ratelimiter.h"
  #include "netlink.h"
  #include "uapi/wireguard.h"
@@ -49,7 +49,7 @@ diff --git a/main.c b/main.c
  
  #include <linux/init.h>
  #include <linux/module.h>
-@@ -20,6 +24,10 @@
+@@ -20,4 +24,8 @@
  {
  	int ret;
  
