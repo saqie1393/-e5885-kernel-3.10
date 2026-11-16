@@ -1,4 +1,4 @@
-name: Build AmneziaWG v1.0.20251104 + awg tool for E5885
+name: Build AmneziaWG v1.0.20260725 + awg tool for E5885
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       version:
         description: 'Release Version'
         required: true
-        default: 'v1.0.20251104'
+        default: 'v1.0.20260725'
 
 jobs:
   build:
@@ -57,11 +57,11 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Clone AmneziaWG Kernel Module v1.0.20251104
+    - name: Clone AmneziaWG Kernel Module v1.0.20260725
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        git clone --branch v1.0.20251104 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
+        git clone --branch v1.0.20260725 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
         rm -rf drivers/net/amneziawg
         ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
 
@@ -148,17 +148,13 @@ jobs:
     - name: Apply Kernel NEON Patch
       shell: bash
       run: |
-        cd "$AWG_SRC"
+         cd "$AWG_SRC"
+         PATCH="$GITHUB_WORKSPACE/patches/neon-only-v1.0.patch"
 
-        PATCH="$GITHUB_WORKSPACE/patches/neon-only.patch"
+         git apply --check "$PATCH"
+         git apply "$PATCH"
 
-        echo "Checking NEON patch..."
-        git apply --check "$PATCH"
-
-        echo "Applying NEON patch..."
-        git apply "$PATCH"
-
-        echo "Kernel NEON patch applied successfully"
+         echo "Kernel NEON patch applied"
 
     - name: Build AmneziaWG Kernel Module
       shell: bash
