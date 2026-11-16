@@ -1,0 +1,124 @@
+--- a/compat/simd-asm/include/asm/simd.h
++++ b/compat/simd-asm/include/asm/simd.h
+@@ -5,12 +5,18 @@
+ #include <asm/fpu/api.h>
+ #endif
+ 
++#ifdef AWG_PRIVATE_KMODE_NEON
++extern bool awg_kmode_neon_enabled;
++#endif
++
+ static __must_check inline bool may_use_simd(void)
+ {
+ #if defined(CONFIG_X86_64)
+ 	return irq_fpu_usable();
+ #elif defined(CONFIG_ARM64) && defined(CONFIG_KERNEL_MODE_NEON)
+ 	return true;
++#elif defined(CONFIG_ARM) && defined(AWG_PRIVATE_KMODE_NEON)
++	return awg_kmode_neon_enabled && !in_nmi() && !in_irq() && !in_serving_softirq();
+ #elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)
+ 	return !in_nmi() && !in_irq() && !in_serving_softirq();
+ #else
+--- a/Kbuild
++++ b/Kbuild
+@@ -8,6 +8,12 @@
+ ccflags-$(if $(WIREGUARD_VERSION),y,) += -D'WIREGUARD_VERSION="$(WIREGUARD_VERSION)"'
+ ccflags-$(if $(OMIT_ENDPOINTS),y,) += -D'OMIT_ENDPOINTS="$(OMIT_ENDPOINTS)"'
+ 
++ccflags-y += -DCONFIG_KERNEL_MODE_NEON=1 -DAWG_PRIVATE_KMODE_NEON
++asflags-y += -DCONFIG_KERNEL_MODE_NEON=1
++
++# Linux 3.10 Balong: run zinc init and self-tests at module load
++ccflags-y += -DCOMPAT_INIT_CRYPTO -DCONFIG_ZINC_SELFTEST=1
++
+ amneziawg-y := main.o noise.o device.o peer.o timers.o queueing.o send.o receive.o socket.o peerlookup.o allowedips.o ratelimiter.o cookie.o netlink.o junk.o header_protection.o
+ 
+ ifeq ($(shell [ $(VERSION) -lt 6 -o \( $(VERSION) -eq 6 -a $(PATCHLEVEL) -lt 1 \) ] && echo y),y)
+@@ -20,5 +26,6 @@
+ 	include $(src)/crypto/Kbuild.include
+ endif
+ include $(src)/compat/Kbuild.include
++amneziawg-y += compat/neon-arm/kmode_neon.o
+ 
+ obj-$(if $(KBUILD_EXTMOD),m,$(CONFIG_AMNEZIAWG)) := amneziawg.o
+--- a/main.c
++++ b/main.c
+@@ -11,16 +11,27 @@
+ #include "ratelimiter.h"
+ #include "netlink.h"
+ #include "uapi/wireguard.h"
++#ifdef COMPAT_INIT_CRYPTO
++#include "crypto/zinc.h"
++#endif
+ 
+ #include <linux/init.h>
+ #include <linux/module.h>
+ #include <net/genetlink.h>
+ #include <net/rtnetlink.h>
+ 
++#ifdef AWG_PRIVATE_KMODE_NEON
++void awg_kmode_neon_init(void);
++#endif
++
+ static int __init wg_mod_init(void)
+ {
+ 	int ret;
+ 
++#ifdef AWG_PRIVATE_KMODE_NEON
++	awg_kmode_neon_init();
++#endif
++
+ #ifdef COMPAT_INIT_CRYPTO
+ 	if ((ret = chacha20_mod_init()) || (ret = poly1305_mod_init()) ||
+ 	    (ret = chacha20poly1305_mod_init()) || (ret = blake2s_mod_init()) ||
+--- a/socket.c
++++ b/socket.c
+@@ -137,7 +137,12 @@
+ 			if (cache)
+ 				dst_cache_reset(cache);
+ 		}
++#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 0)
++		/* 3.10: ip6_dst_lookup_flow() has no net argument; use the compat ipv6_stub path */
++		dst = ipv6_stub->ipv6_dst_lookup_flow(sock_net(sock), sock, &fl, NULL);
++#else
+ 		dst = ip6_dst_lookup_flow(sock_net(sock), sock, &fl, NULL);
++#endif
+ 		if (IS_ERR(dst)) {
+ 			ret = PTR_ERR(dst);
+ 			net_dbg_ratelimited("%s: No route to %pISpfsc, error %d\n",
+--- a/send.c
++++ b/send.c
+@@ -407,9 +407,14 @@
+ 
+ #ifdef COMPAT_CRYPTO_IS_ZINC
+ 		simd_relax(&simd_context);
+-#endif
++		/* On 3.10 cond_resched() ignores preempt_count: never schedule
++		 * with NEON held. simd_relax() or simd_put() will reschedule. */
++		if (need_resched() && !(simd_context & HAVE_SIMD_IN_USE))
++			cond_resched();
++#else
+ 		if (need_resched())
+ 			cond_resched();
++#endif
+ 	}
+ #ifdef COMPAT_CRYPTO_IS_ZINC
+ 	simd_put(&simd_context);
+--- a/receive.c
++++ b/receive.c
+@@ -609,9 +609,14 @@
+ 		wg_queue_enqueue_per_peer_rx(skb, state);
+ #ifdef COMPAT_CRYPTO_IS_ZINC
+ 		simd_relax(&simd_context);
+-#endif
++		/* On 3.10 cond_resched() ignores preempt_count: never schedule
++		 * with NEON held. simd_relax() or simd_put() will reschedule. */
++		if (need_resched() && !(simd_context & HAVE_SIMD_IN_USE))
++			cond_resched();
++#else
+ 		if (need_resched())
+ 			cond_resched();
++#endif
+ 	}
+ 
+ #ifdef COMPAT_CRYPTO_IS_ZINC
