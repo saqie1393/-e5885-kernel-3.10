@@ -1,4 +1,4 @@
-name: Build AmneziaWG v1.0.20260725 + awg tool for E5885
+name: Build AmneziaWG v1.0.20251104 + awg tool for E5885
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       version:
         description: 'Release Version'
         required: true
-        default: 'v1.0.20260725'
+        default: 'v1.0.20251104'
 
 jobs:
   build:
@@ -57,16 +57,242 @@ jobs:
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ prepare
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon LOCALVERSION=+ modules_prepare
 
-    - name: Clone AmneziaWG Kernel Module v1.0.20260725
+    - name: Clone AmneziaWG Kernel Module v1.0.20251104
       shell: bash
       run: |
         cd "$KERNEL_DIR"
-        git clone --branch v1.0.20260725 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
+        git clone --branch v1.0.20251104 --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git ../amneziawg-kmod
         rm -rf drivers/net/amneziawg
         ln -s "$(realpath ../amneziawg-kmod/src)" drivers/net/amneziawg
 
-   
+    - name: Apply compatibility patches (repo patch file)
+      shell: bash
+      run: |
+        cd "$KERNEL_DIR"
+        AWG_SRC="drivers/net/amneziawg"
+        PATCH_FILE="$GITHUB_WORKSPACE/patches/3.10-compat.patch"
 
+        echo "=== Trying to apply permanent patch file ==="
+        PATCH_APPLIED=1
+        if [ -f "$PATCH_FILE" ]; then
+          if git apply --check -p1 --directory=. "$PATCH_FILE" 2>/dev/null; then
+            git apply -p1 "$PATCH_FILE"
+            echo "✅ Patch applied via git apply"
+          elif patch -p1 --dry-run --forward < "$PATCH_FILE" >/dev/null 2>&1; then
+            patch -p1 --forward < "$PATCH_FILE"
+            echo "✅ Patch applied via patch(1)"
+          else
+            echo "⚠️ Patch file did not apply cleanly — falling back to inline fixes"
+            PATCH_APPLIED=0
+          fi
+        else
+          echo "⚠️ Patch file not found — falling back to inline fixes"
+          PATCH_APPLIED=0
+        fi
+
+        if [ "$PATCH_APPLIED" = "0" ]; then
+          echo "=== Applying inline compatibility fixes ==="
+          echo "--- 1. ARM CPUID ---"
+          sed -i '/#define read_cpuid_part() read_cpuid_part_number()/d' "$AWG_SRC/compat/compat.h" || true
+
+          echo "--- 2. fallthrough ---"
+          if ! grep -q '^#ifndef fallthrough$' "$AWG_SRC/compat/compat.h"; then
+            printf '\n#ifndef fallthrough\n#define fallthrough\n#endif\n' >> "$AWG_SRC/compat/compat.h"
+          fi
+
+          echo "--- 3. lspush/lspull ---"
+          COMPAT_ASM="$AWG_SRC/compat/compat-asm.h"
+          if [ -f "$COMPAT_ASM" ]; then
+            sed -i '/^#ifdef lspush$/,/^#endif$/d; /^#ifdef lspull$/,/^#endif$/d' "$COMPAT_ASM" || true
+            sed -i 's|^#define[[:space:]]\+lspush\>|#ifndef lspush\n#define lspush|' "$COMPAT_ASM" || true
+            sed -i 's|^#define[[:space:]]\+lspull\>|#ifndef lspull\n#define lspull|' "$COMPAT_ASM" || true
+            awk '
+              BEGIN { prev=""; }
+              {
+                if (prev ~ /^#ifndef lspush$/ && $0 ~ /^#define lspush/) { print $0; print "#endif"; prev=$0; next }
+                if (prev ~ /^#ifndef lspull$/ && $0 ~ /^#define lspull/) { print $0; print "#endif"; prev=$0; next }
+                print $0; prev=$0
+              }
+            ' "$COMPAT_ASM" > /tmp/compat-asm.tmp && mv /tmp/compat-asm.tmp "$COMPAT_ASM"
+          fi
+
+          echo "--- 4. C90 warning silence ---"
+          QUEUEING_H="$AWG_SRC/queueing.h"
+          if [ -f "$QUEUEING_H" ]; then
+            if ! grep -q 'diagnostic ignored "-Wdeclaration-after-statement"' "$QUEUEING_H"; then
+              awk '
+                BEGIN { inserted=0 }
+                !inserted && /^[[:space:]]*\*\/[[:space:]]*$/ {
+                  print; print "";
+                  print "#pragma GCC diagnostic push";
+                  print "#pragma GCC diagnostic ignored \"-Wdeclaration-after-statement\"";
+                  inserted=1; next
+                }
+                { print }
+              ' "$QUEUEING_H" > /tmp/queueing.tmp && mv /tmp/queueing.tmp "$QUEUEING_H"
+              printf '\n#pragma GCC diagnostic pop\n' >> "$QUEUEING_H"
+            fi
+          fi
+
+          echo "--- 5. netlink_ext_ack ---"
+          DEVICE_C="$AWG_SRC/device.c"
+          if [ -f "$DEVICE_C" ]; then
+            if ! grep -q '^struct netlink_ext_ack;' "$DEVICE_C"; then
+              sed -i '1s/^/#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)\nstruct netlink_ext_ack;\n#endif\n/' "$DEVICE_C"
+            fi
+          fi
+          echo "=== Inline fixes applied ==="
+        fi
+        echo "=== All compatibility handling done ==="
+    - name: Add private kernel-mode NEON (3.10 UP, no CONFIG_KERNEL_MODE_NEON)
+      shell: bash
+      run: |
+        set -e
+        cd "$KERNEL_DIR/drivers/net/amneziawg"
+
+        # sanity: kernel config check
+        if grep -q '^CONFIG_SMP=y' "$GITHUB_WORKSPACE/$KERNEL_DIR/.config" 2>/dev/null || grep -q '^CONFIG_SMP=y' ../../../.config; then
+          echo "ERROR: kernel is SMP, kmode_neon.c is UP only"; exit 1
+        fi
+        if grep -q '^CONFIG_KERNEL_MODE_NEON=y' ../../../.config; then
+          echo "ERROR: kernel already has KERNEL_MODE_NEON, use native one"; exit 1
+        fi
+
+        # 1. new file
+        mkdir -p compat/neon-arm
+        cat > compat/neon-arm/kmode_neon.c <<'EOF'
+        // SPDX-License-Identifier: GPL-2.0
+        /*
+         * Private kernel-mode NEON for kernels built without CONFIG_KERNEL_MODE_NEON.
+         * Same logic as kernel_neon_begin()/kernel_neon_end() of arch/arm/vfp/vfpmodule.c,
+         * using vfp_current_hw_state and vfp_save_state found via kallsyms_lookup_name().
+         * Uniprocessor only.
+         */
+        #include <linux/kernel.h>
+        #include <linux/module.h>
+        #include <linux/kallsyms.h>
+        #include <linux/preempt.h>
+        #include <linux/sched.h>
+        #include <linux/smp.h>
+        #include <asm/thread_info.h>
+        #include <asm/vfp.h>
+
+        #ifdef CONFIG_SMP
+        #error "kmode_neon.c supports uniprocessor kernels only"
+        #endif
+
+        #define awg_fmrx(_vfp_) ({ u32 __v; \
+            asm("mrc p10, 7, %0, " #_vfp_ ", cr0, 0" : "=r" (__v) : : "cc"); __v; })
+        #define awg_fmxr(_vfp_, _var_) \
+            asm("mcr p10, 7, %0, " #_vfp_ ", cr0, 0" : : "r" (_var_) : "cc")
+
+        static bool neon = true;
+        module_param(neon, bool, 0444);
+        MODULE_PARM_DESC(neon, "Use kernel-mode NEON for crypto (default: on)");
+
+        bool awg_kmode_neon_enabled __read_mostly;
+
+        static union vfp_state **awg_vfp_hw_state __read_mostly;
+        static void (*awg_vfp_save_state)(void *location, u32 fpexc) __read_mostly;
+
+        void kernel_neon_begin(void)
+        {
+            struct thread_info *thread = current_thread_info();
+            union vfp_state **hw;
+            unsigned int cpu;
+            u32 fpexc;
+
+            cpu = get_cpu();
+            hw = &awg_vfp_hw_state[cpu];
+
+            fpexc = awg_fmrx(cr8) | FPEXC_EN;
+            awg_fmxr(cr8, fpexc);
+
+            if (*hw == &thread->vfpstate)
+                awg_vfp_save_state(&thread->vfpstate, fpexc);
+            else if (*hw != NULL)
+                awg_vfp_save_state(*hw, fpexc);
+            *hw = NULL;
+        }
+
+        void kernel_neon_end(void)
+        {
+            awg_fmxr(cr8, awg_fmrx(cr8) & ~FPEXC_EN);
+            put_cpu();
+        }
+
+        void __init awg_kmode_neon_init(void)
+        {
+            unsigned long hw, save;
+
+            if (!neon) {
+                pr_info("kernel-mode NEON: off (neon=0)\n");
+                return;
+            }
+            if (!(elf_hwcap & HWCAP_NEON)) {
+                pr_info("kernel-mode NEON: off (no NEON in hwcap)\n");
+                return;
+            }
+            hw = kallsyms_lookup_name("vfp_current_hw_state");
+            save = kallsyms_lookup_name("vfp_save_state");
+            if (!hw || !save) {
+                pr_warn("kernel-mode NEON: off (vfp symbols not found)\n");
+                return;
+            }
+            awg_vfp_hw_state = (union vfp_state **)hw;
+            awg_vfp_save_state = (void (*)(void *, u32))save;
+            awg_kmode_neon_enabled = true;
+            pr_info("kernel-mode NEON: on\n");
+        }
+        EOF
+
+        # 2-5. edits (idempotent, fail loudly if pattern missing)
+        python3 - <<'PY'
+        def sub(path, old, new):
+            s = open(path).read()
+            if new in s:
+                print("already applied:", path); return
+            assert old in s, "pattern not found in " + path
+            open(path, "w").write(s.replace(old, new, 1))
+            print("patched:", path)
+
+        # simd.h
+        p = "compat/simd-asm/include/asm/simd.h"
+        sub(p, "static __must_check inline bool may_use_simd(void)",
+            "#ifdef AWG_PRIVATE_KMODE_NEON\nextern bool awg_kmode_neon_enabled;\n#endif\n\n"
+            "static __must_check inline bool may_use_simd(void)")
+        sub(p, "#elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)\n",
+            "#elif defined(CONFIG_ARM) && defined(AWG_PRIVATE_KMODE_NEON)\n"
+            "\treturn awg_kmode_neon_enabled && !in_nmi() && !in_irq() && !in_serving_softirq();\n"
+            "#elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)\n")
+
+        # main.c
+        p = "main.c"
+        sub(p, "static int __init wg_mod_init(void)\n{\n\tint ret;\n\n",
+            "#ifdef AWG_PRIVATE_KMODE_NEON\nvoid awg_kmode_neon_init(void);\n#endif\n\n"
+            "static int __init wg_mod_init(void)\n{\n\tint ret;\n\n"
+            "#ifdef AWG_PRIVATE_KMODE_NEON\n\tawg_kmode_neon_init();\n#endif\n\n")
+
+        # send.c / receive.c
+        old = "\t\tsimd_relax(&simd_context);\n#endif\n\t\tif (need_resched())\n\t\t\tcond_resched();\n"
+        new = ("\t\tsimd_relax(&simd_context);\n"
+               "\t\t/* 3.10: never schedule with NEON held */\n"
+               "\t\tif (need_resched() && !(simd_context & HAVE_SIMD_IN_USE))\n"
+               "\t\t\tcond_resched();\n#else\n"
+               "\t\tif (need_resched())\n\t\t\tcond_resched();\n#endif\n")
+        for p in ("send.c", "receive.c"):
+            sub(p, old, new)
+        PY
+
+        # Kbuild
+        grep -q AWG_PRIVATE_KMODE_NEON Kbuild || cat >> Kbuild <<'EOF'
+
+        ccflags-y += -DCONFIG_KERNEL_MODE_NEON=1 -DAWG_PRIVATE_KMODE_NEON
+        asflags-y += -DCONFIG_KERNEL_MODE_NEON=1
+        ccflags-y += -DCOMPAT_INIT_CRYPTO
+        amneziawg-y += compat/neon-arm/kmode_neon.o
+        EOF
+        echo "=== NEON patch done ==="
     - name: Build AmneziaWG Kernel Module
       shell: bash
       run: |
