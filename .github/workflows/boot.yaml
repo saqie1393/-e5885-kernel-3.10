@@ -160,21 +160,32 @@ jobs:
         cp "$NEON_DIR/chacha.h" "$AWG_SRC/compat/crypto/chacha/include/crypto/chacha.h"
         echo "✅ kmode_neon.c and chacha.h copied"
 
-        echo "=== 2. Applying NEON compat patch ==="
-        if [ -f "$NEON_PATCH" ]; then
-          if git apply --check -p1 --directory="$AWG_SRC" "$NEON_PATCH" 2>/dev/null; then
-            git apply -p1 --directory="$AWG_SRC" "$NEON_PATCH"
-            echo "✅ NEON patch applied via git apply"
-          elif patch -p1 --dry-run --forward -d "$AWG_SRC" < "$NEON_PATCH" >/dev/null 2>&1; then
-            patch -p1 --forward -d "$AWG_SRC" < "$NEON_PATCH"
-            echo "✅ NEON patch applied via patch(1)"
-          else
-            echo "❌ NEON patch failed to apply!"
-            exit 1
-          fi
-        else
+        echo "=== 2. Applying NEON compat patch via patch(1) ==="
+        if [ ! -f "$NEON_PATCH" ]; then
           echo "❌ NEON patch file not found: $NEON_PATCH"
           exit 1
+        fi
+
+        # patch(1) -d se seedha AWG_SRC mein jaata hai, git worktree root ka issue nahi
+        # -p1 : a/ aur b/ prefix strip karo
+        # --forward : already applied hunks ko skip karo (error mat do)
+        if patch -p1 --forward --dry-run -d "$AWG_SRC" < "$NEON_PATCH" > /tmp/neon-patch-dryrun.log 2>&1; then
+          patch -p1 --forward -d "$AWG_SRC" < "$NEON_PATCH"
+          echo "✅ NEON patch applied via patch(1)"
+        else
+          echo "❌ NEON patch dry-run failed. Log:"
+          cat /tmp/neon-patch-dryrun.log
+          echo ""
+          echo "=== Trying git apply as fallback (without --directory) ==="
+          cd "$AWG_SRC"
+          if git apply --check -p1 "$NEON_PATCH" 2>/dev/null; then
+            git apply -p1 "$NEON_PATCH"
+            echo "✅ NEON patch applied via git apply (cwd=$AWG_SRC)"
+          else
+            echo "❌ Both patch(1) and git apply failed."
+            echo "Check that the patch file matches the current source tree."
+            exit 1
+          fi
         fi
 
         echo "=== NEON compatibility complete ==="
