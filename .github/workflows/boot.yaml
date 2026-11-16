@@ -272,12 +272,23 @@ jobs:
             "\treturn awg_kmode_neon_enabled && !in_nmi() && !in_irq() && !in_serving_softirq();\n"
             "#elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)\n")
 
-        # main.c
+        # main.c: neon init call
         p = "main.c"
         sub(p, "static int __init wg_mod_init(void)\n{\n\tint ret;\n\n",
             "#ifdef AWG_PRIVATE_KMODE_NEON\nvoid awg_kmode_neon_init(void);\n#endif\n\n"
             "static int __init wg_mod_init(void)\n{\n\tint ret;\n\n"
             "#ifdef AWG_PRIVATE_KMODE_NEON\n\tawg_kmode_neon_init();\n#endif\n\n")
+
+        # main.c: zinc init declarations (needed when COMPAT_INIT_CRYPTO is set)
+        s = open(p).read()
+        if '"crypto/zinc.h"' in s:
+            print("already applied: zinc include")
+        else:
+            anchor = '#include "uapi/wireguard.h"\n'
+            assert anchor in s, "anchor not found in main.c"
+            s = s.replace(anchor, anchor + '#ifdef COMPAT_INIT_CRYPTO\n#include "crypto/zinc.h"\n#endif\n', 1)
+            open(p, "w").write(s)
+            print("patched: main.c zinc include")
 
         # send.c / receive.c: never cond_resched() while NEON is held
         pat = re.compile(
@@ -325,6 +336,7 @@ jobs:
 
         echo "=== verify ==="
         grep -n -B2 -A4 'never schedule with NEON held' send.c receive.c
+        grep -n -A2 'COMPAT_INIT_CRYPTO' main.c | head -20
         tail -n 6 Kbuild
         echo "=== NEON patch done ==="
     - name: Build AmneziaWG Kernel Module
