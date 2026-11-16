@@ -144,19 +144,23 @@ jobs:
           echo "=== Inline fixes applied ==="
         fi
         echo "=== All compatibility handling done ==="
-    - name: Add private kernel-mode NEON (3.10 UP, no CONFIG_KERNEL_MODE_NEON)
+        - name: Add private kernel-mode NEON (3.10 UP, no CONFIG_KERNEL_MODE_NEON)
       shell: bash
       run: |
         set -e
+        KCONF="$GITHUB_WORKSPACE/$KERNEL_DIR/.config"
+        [ -f "$KCONF" ] || { echo "ERROR: $KCONF not found"; exit 1; }
         cd "$KERNEL_DIR/drivers/net/amneziawg"
 
-        # sanity: kernel config check
-        if grep -q '^CONFIG_SMP=y' "$GITHUB_WORKSPACE/$KERNEL_DIR/.config" 2>/dev/null || grep -q '^CONFIG_SMP=y' ../../../.config; then
+        # sanity: kernel config
+        if grep -q '^CONFIG_SMP=y' "$KCONF"; then
           echo "ERROR: kernel is SMP, kmode_neon.c is UP only"; exit 1
         fi
-        if grep -q '^CONFIG_KERNEL_MODE_NEON=y' ../../../.config; then
+        if grep -q '^CONFIG_KERNEL_MODE_NEON=y' "$KCONF"; then
           echo "ERROR: kernel already has KERNEL_MODE_NEON, use native one"; exit 1
         fi
+        echo "--- relevant kernel config ---"
+        grep -E '^CONFIG_(KALLSYMS|VFP|NEON|SMP|PREEMPT)' "$KCONF" || true
 
         # 1. new file
         mkdir -p compat/neon-arm
@@ -248,6 +252,8 @@ jobs:
 
         # 2-5. edits (idempotent, fail loudly if pattern missing)
         python3 - <<'PY'
+        import re, sys
+
         def sub(path, old, new):
             s = open(path).read()
             if new in s:
@@ -273,15 +279,39 @@ jobs:
             "static int __init wg_mod_init(void)\n{\n\tint ret;\n\n"
             "#ifdef AWG_PRIVATE_KMODE_NEON\n\tawg_kmode_neon_init();\n#endif\n\n")
 
-        # send.c / receive.c
-        old = "\t\tsimd_relax(&simd_context);\n#endif\n\t\tif (need_resched())\n\t\t\tcond_resched();\n"
-        new = ("\t\tsimd_relax(&simd_context);\n"
-               "\t\t/* 3.10: never schedule with NEON held */\n"
-               "\t\tif (need_resched() && !(simd_context & HAVE_SIMD_IN_USE))\n"
-               "\t\t\tcond_resched();\n#else\n"
-               "\t\tif (need_resched())\n\t\t\tcond_resched();\n#endif\n")
+        # send.c / receive.c: never cond_resched() while NEON is held
+        pat = re.compile(
+            r'(?P<i>[ \t]*)simd_relax\(&simd_context\);[ \t]*\r?\n'
+            r'(?P<endif>[ \t]*#[ \t]*endif[^\n]*\n)?'
+            r'[ \t]*if[ \t]*\([ \t]*need_resched\(\)[ \t]*\)\s*'
+            r'cond_resched\(\);[ \t]*\r?\n')
+
+        def patch_resched(path):
+            s = open(path).read()
+            if "never schedule with NEON held" in s:
+                print("already applied:", path); return
+            m = pat.search(s)
+            if not m:
+                print("ERROR: resched pattern not found in " + path)
+                for n, line in enumerate(s.splitlines(), 1):
+                    if "simd_relax" in line or "need_resched" in line or "cond_resched" in line:
+                        print("%s:%d: %r" % (path, n, line))
+                sys.exit(1)
+            i = m.group("i")
+            guard = (i + "/* 3.10: never schedule with NEON held */\n"
+                     + i + "if (need_resched() && !(simd_context & HAVE_SIMD_IN_USE))\n"
+                     + i + "\tcond_resched();\n")
+            if m.group("endif"):
+                new = (i + "simd_relax(&simd_context);\n" + guard
+                       + "#else\n" + i + "if (need_resched())\n"
+                       + i + "\tcond_resched();\n#endif\n")
+            else:
+                new = i + "simd_relax(&simd_context);\n" + guard
+            open(path, "w").write(s[:m.start()] + new + s[m.end():])
+            print("patched:", path)
+
         for p in ("send.c", "receive.c"):
-            sub(p, old, new)
+            patch_resched(p)
         PY
 
         # Kbuild
@@ -292,6 +322,10 @@ jobs:
         ccflags-y += -DCOMPAT_INIT_CRYPTO
         amneziawg-y += compat/neon-arm/kmode_neon.o
         EOF
+
+        echo "=== verify ==="
+        grep -n -B2 -A4 'never schedule with NEON held' send.c receive.c
+        tail -n 6 Kbuild
         echo "=== NEON patch done ==="
     - name: Build AmneziaWG Kernel Module
       shell: bash
