@@ -1,0 +1,158 @@
+diff --git a/Kbuild b/Kbuild
+index 619a1f2..c913123 100644
+--- a/Kbuild
++++ b/Kbuild
+@@ -8,6 +8,9 @@ ccflags-$(CONFIG_AMNEZIAWG_DEBUG) += -DDEBUG -g
+ ccflags-$(if $(WIREGUARD_VERSION),y,) += -D'WIREGUARD_VERSION="$(WIREGUARD_VERSION)"'
+ ccflags-$(if $(OMIT_ENDPOINTS),y,) += -D'OMIT_ENDPOINTS="$(OMIT_ENDPOINTS)"'
+ 
++ccflags-y += -DCONFIG_KERNEL_MODE_NEON=1 -DAWG_PRIVATE_KMODE_NEON
++asflags-y += -DCONFIG_KERNEL_MODE_NEON=1
++
+ amneziawg-y := main.o noise.o device.o peer.o timers.o queueing.o send.o receive.o socket.o peerlookup.o allowedips.o ratelimiter.o cookie.o netlink.o junk.o magic_header.o
+ 
+ ifeq ($(shell [ $(VERSION) -lt 6 -o \( $(VERSION) -eq 6 -a $(PATCHLEVEL) -lt 1 \) ] && echo y),y)
+@@ -20,5 +23,6 @@ ifeq ($(shell [ $(VERSION) -lt 5 -o \( $(VERSION) -eq 5 -a $(PATCHLEVEL) -lt 10
+ 	include $(src)/crypto/Kbuild.include
+ endif
+ include $(src)/compat/Kbuild.include
++amneziawg-y += compat/neon-arm/kmode_neon.o
+ 
+ obj-$(if $(KBUILD_EXTMOD),m,$(CONFIG_AMNEZIAWG)) := amneziawg.o
+diff --git a/compat/neon-arm/kmode_neon.c b/compat/neon-arm/kmode_neon.c
+new file mode 100644
+index 0000000..99e9cc5
+--- /dev/null
++++ b/compat/neon-arm/kmode_neon.c
+@@ -0,0 +1,82 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Private kernel-mode NEON for kernels built without CONFIG_KERNEL_MODE_NEON.
++ * Same logic as kernel_neon_begin()/kernel_neon_end() of kernel ARM VFP code.
++ * Uses vfp_current_hw_state and vfp_save_state through kallsyms. UP kernels only.
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/kallsyms.h>
++#include <linux/preempt.h>
++#include <linux/sched.h>
++#include <linux/smp.h>
++#include <asm/thread_info.h>
++#include <asm/vfp.h>
++
++#ifdef CONFIG_SMP
++#error "kmode_neon.c supports uniprocessor kernels only"
++#endif
++
++#define awg_fmrx(_vfp_) ({ u32 __v; \\
++\tasm("mrc p10, 7, %0, " #_vfp_ ", cr0, 0" : "=r" (__v) : : "cc"); __v; })
++#define awg_fmxr(_vfp_, _var_) \\
++\tasm("mcr p10, 7, %0, " #_vfp_ ", cr0, 0" : : "r" (_var_) : "cc")
++
++static bool neon = true;
++module_param(neon, bool, 0444);
++MODULE_PARM_DESC(neon, "Use kernel-mode NEON for crypto (default: on)");
++
++bool awg_kmode_neon_enabled __read_mostly;
++
++static union vfp_state **awg_vfp_hw_state __read_mostly;
++static void (*awg_vfp_save_state)(void *location, u32 fpexc) __read_mostly;
++
++void kernel_neon_begin(void)
++{
++\tstruct thread_info *thread = current_thread_info();
++\tunion vfp_state **hw;
++\tunsigned int cpu;
++\tu32 fpexc;
++
++\tcpu = get_cpu();
++\thw = &awg_vfp_hw_state[cpu];
++
++\tfpexc = awg_fmrx(cr8) | FPEXC_EN;
++\tawg_fmxr(cr8, fpexc);
++
++\tif (*hw == &thread->vfpstate)
++\t\tawg_vfp_save_state(&thread->vfpstate, fpexc);
++\telse if (*hw != NULL)
++\t\tawg_vfp_save_state(*hw, fpexc);
++\t*hw = NULL;
++}
++
++void kernel_neon_end(void)
++{
++\tawg_fmxr(cr8, awg_fmrx(cr8) & ~FPEXC_EN);
++\tput_cpu();
++}
++
++void __init awg_kmode_neon_init(void)
++{
++\tunsigned long hw, save;
++
++\tif (!neon) {
++\t\tpr_info("kernel-mode NEON: off (neon=0)\\n");
++\t\treturn;
++\t}
++\tif (!(elf_hwcap & HWCAP_NEON)) {
++\t\tpr_info("kernel-mode NEON: off (no NEON in hwcap)\\n");
++\t\treturn;
++\t}
++\thw = kallsyms_lookup_name("vfp_current_hw_state");
++\tsave = kallsyms_lookup_name("vfp_save_state");
++\tif (!hw || !save) {
++\t\tpr_warn("kernel-mode NEON: off (vfp symbols not found)\\n");
++\t\treturn;
++\t}
++\tawg_vfp_hw_state = (union vfp_state **)hw;
++\tawg_vfp_save_state = (void (*)(void *, u32))save;
++\tawg_kmode_neon_enabled = true;
++\tpr_info("kernel-mode NEON: on\\n");
++}
+diff --git a/compat/simd-asm/include/asm/simd.h b/compat/simd-asm/include/asm/simd.h
+index a975b38..2848771 100644
+--- a/compat/simd-asm/include/asm/simd.h
++++ b/compat/simd-asm/include/asm/simd.h
+@@ -5,12 +5,18 @@
+ #include <asm/fpu/api.h>
+ #endif
+ 
++#ifdef AWG_PRIVATE_KMODE_NEON
++extern bool awg_kmode_neon_enabled;
++#endif
++
+ static __must_check inline bool may_use_simd(void)
+ {
+ #if defined(CONFIG_X86_64)
+ 	return irq_fpu_usable();
+ #elif defined(CONFIG_ARM64) && defined(CONFIG_KERNEL_MODE_NEON)
+ 	return true;
++#elif defined(CONFIG_ARM) && defined(AWG_PRIVATE_KMODE_NEON)
++\treturn awg_kmode_neon_enabled && !in_nmi() && !in_irq() && !in_serving_softirq();
+ #elif defined(CONFIG_ARM) && defined(CONFIG_KERNEL_MODE_NEON)
+ 	return !in_nmi() && !in_irq() && !in_serving_softirq();
+ #else
+diff --git a/main.c b/main.c
+index 3692785..e1c8764 100644
+--- a/main.c
++++ b/main.c
+@@ -12,6 +12,10 @@
+ #include "netlink.h"
+ #include "uapi/wireguard.h"
+ 
++#ifdef AWG_PRIVATE_KMODE_NEON
++void awg_kmode_neon_init(void);
++#endif
++
+ #include <linux/init.h>
+ #include <linux/module.h>
+ #include <net/genetlink.h>
+@@ -21,6 +25,10 @@ static int __init wg_mod_init(void)
+ {
+ 	int ret;
+ 
++#ifdef AWG_PRIVATE_KMODE_NEON
++\tawg_kmode_neon_init();
++#endif
++
+ #ifdef COMPAT_INIT_CRYPTO
+ 	if ((ret = chacha20_mod_init()) || (ret = poly1305_mod_init()) ||
+ 	    (ret = chacha20poly1305_mod_init()) || (ret = blake2s_mod_init()) ||
